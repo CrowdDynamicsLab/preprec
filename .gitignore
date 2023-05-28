@@ -1,3 +1,9 @@
 .DS_Store
 __pycache__/
 *_default/
+run.sh
+run.swb
+run2.sh
+run2.swb
+res/
+runs/
