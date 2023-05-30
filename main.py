@@ -28,19 +28,17 @@ parser.add_argument('--device', default='cpu', type=str)
 parser.add_argument('--inference_only',  action='store_true')
 parser.add_argument('--state_dict_path', default=None, type=str)
 
-parser.add_argument('--monthpop', default='wt', type=str)
+parser.add_argument('--monthpop', default='wtembed', type=str)
+parser.add_argument('--weekpop', default='week_embed2', type=str)
 parser.add_argument('--base_dim1', default=11, type=int)
 parser.add_argument('--input_units1', default=132, type=int)
 parser.add_argument('--base_dim2', default=6, type=int)
-parser.add_argument('--input_units2', default=6, type=int)
+parser.add_argument('--input_units2', default=24, type=int)
 parser.add_argument('--seed', default=2023, type=int)
 parser.add_argument('--augment',  action='store_true')
 parser.add_argument('--transfer',  action='store_true')
 
 args = parser.parse_args()
-
-if args.train_dir == '/default' and args.augment:
-    args.train_dir = '/augment'
 
 write = 'res/' + args.dataset + args.train_dir + '/'
 if not os.path.isdir(write):

@@ -139,10 +139,10 @@ class PopularityEncoding(torch.nn.Module):
         self.base_dim1 = args.base_dim1
         self.base_dim2 = args.base_dim2
         # Not a parameter
-        month_pop = np.loadtxt(f'../data/{args.dataset}_{args.monthpop}embed.csv', delimiter=',')
-        week_pop = np.loadtxt(f'../data/{args.dataset}_week_embed2.csv', delimiter=',')
-        self.register_buffer('month_pop_table', torch.cat((torch.zeros((month_pop.shape[0], 1)), torch.FloatTensor(month_pop)), dim=1))
-        self.register_buffer('week_pop_table', torch.cat((torch.zeros((week_pop.shape[0], 1)), torch.FloatTensor(week_pop)), dim=1))
+        month_pop = np.loadtxt(f'../data/{args.dataset}_{args.monthpop}.txt')
+        week_pop = np.loadtxt(f'../data/{args.dataset}_{args.weekpop}.txt')
+        self.register_buffer('month_pop_table', torch.cat((torch.zeros((month_pop.shape[0] + self.input1 - self.base_dim1, 1)), torch.cat((torch.zeros((self.input1 - self.base_dim1, month_pop.shape[1])), torch.FloatTensor(month_pop)), dim=0)), dim=1))
+        self.register_buffer('week_pop_table', torch.cat((torch.zeros((week_pop.shape[0] + self.input2 - self.base_dim2, 1)), torch.cat((torch.zeros((self.input2 - self.base_dim2, week_pop.shape[1])), torch.FloatTensor(week_pop)), dim=0)), dim=1))
 
     def forward(self, log_seqs, time1_seqs, time2_seqs):
         month_table_rows = torch.flatten(torch.flatten(torch.LongTensor(time1_seqs)).reshape((-1, 1))*self.base_dim1 + torch.arange(self.input1))
