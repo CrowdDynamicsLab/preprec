@@ -24,12 +24,12 @@ class PointWiseFeedForward(torch.nn.Module):
 class PointWiseFeedForward2(torch.nn.Module):
     def __init__(self, d_model, d_ff, dropout=0.1):
         super(PointWiseFeedForward2, self).__init__()
-        self.w_1 = nn.Linear(d_model, d_ff)
-        self.w_2 = nn.Linear(d_ff, d_model)
-        self.dropout = nn.Dropout(dropout)
+        self.w_1 = torch.nn.Linear(d_model, d_ff)
+        self.w_2 = torch.nn.Linear(d_ff, d_model)
+        self.dropout = torch.nn.Dropout(dropout)
 
     def GELU(self, x):
-        return 0.5 * x * (1 + torch.tanh(math.sqrt(2 / math.pi) * (x + 0.044715 * torch.pow(x, 3))))
+        return 0.5 * x * (1 + torch.tanh(np.sqrt(2 / np.pi) * (x + 0.044715 * torch.pow(x, 3))))
 
     def forward(self, x):
         return self.w_2(self.dropout(self.GELU(self.w_1(x))))
@@ -105,16 +105,15 @@ class MultiHeadAttention(torch.nn.Module):
     """
 
     def __init__(self, hidden_size, head_num, dropout_rate):
-        super().__init__()
-        assert d_model % h == 0
+        super(MultiHeadAttention, self).__init__()
 
         # We assume d_v always equals d_k
         self.d_k = hidden_size // head_num
-        self.h = h
+        self.h = head_num
 
-        self.linear_layers = nn.ModuleList([nn.Linear(hidden_size, hidden_size) for _ in range(3)])
-        self.output_linear = nn.Linear(hidden_size, hidden_size)
-        self.attention = Attention()
+        self.linear_layers = torch.nn.ModuleList([torch.nn.Linear(hidden_size, hidden_size) for _ in range(3)])
+        self.output_linear = torch.nn.Linear(hidden_size, hidden_size)
+        self.dropout = torch.nn.Dropout(p=dropout_rate)
 
     def forward(self, query, mask=None):
         key = query
@@ -127,14 +126,13 @@ class MultiHeadAttention(torch.nn.Module):
 
         # 2) Apply attention on all the projected vectors in batch.
         scores = torch.matmul(query, key.transpose(-2, -1)) \
-                 / math.sqrt(query.size(-1))
+                 / np.sqrt(query.size(-1))
 
         if mask is not None:
             scores = scores.masked_fill(mask == 0, -1e9)
 
-        p_attn = F.softmax(scores, dim=-1)
-        if dropout is not None:
-            p_attn = dropout(p_attn)
+        p_attn = torch.nn.functional.softmax(scores, dim=-1)
+        p_attn = self.dropout(p_attn)
 
         x, attn = torch.matmul(p_attn, value), p_attn
 
@@ -201,6 +199,8 @@ class PopularityEncoding(torch.nn.Module):
 class NewRec(torch.nn.Module):
     def __init__(self, user_num, item_num, args):
         super(NewRec, self).__init__()
+        assert args.input_units1 % args.base_dim1 == 0
+        assert args.input_units2 % args.base_dim2 == 0
 
         self.user_num = user_num
         self.item_num = item_num
@@ -294,7 +294,6 @@ class SASRec(torch.nn.Module):
         self.user_num = user_num
         self.item_num = item_num
         self.dev = args.device
-        self.model = args.model
 
         # TODO: loss += args.l2_emb for regularizing embedding vectors during training
         # https://stackoverflow.com/questions/42704283/adding-l1-l2-regularization-in-pytorch
@@ -377,13 +376,11 @@ class SASRec(torch.nn.Module):
 
 # adapted from https://github.com/jaywonchung/BERT4Rec-VAE-Pytorch/tree/master
 class BERT4Rec(torch.nn.Module):
-    def __init__(self, args):
+    def __init__(self, itemnum, args):
         super(BERT4Rec, self).__init__()
         self.maxlen = args.maxlen
-        self.item_num = item_num
-
-        n_layers = args.bert_num_blocks
-        heads = args.bert_num_heads
+        self.item_num = itemnum
+        self.dev = args.device
 
         self.item_emb = torch.nn.Embedding(self.item_num+1, args.hidden_units, padding_idx=0)
         self.pos_emb = torch.nn.Embedding(args.maxlen, args.hidden_units) 
@@ -394,8 +391,6 @@ class BERT4Rec(torch.nn.Module):
         self.attention_layers = torch.nn.ModuleList()
         self.forward_layernorms = torch.nn.ModuleList()
         self.forward_layers = torch.nn.ModuleList()
-
-        self.last_layernorm = torch.nn.LayerNorm(args.hidden_units, eps=1e-8)
 
         for _ in range(args.num_blocks):
             new_attn_layernorm = torch.nn.LayerNorm(args.hidden_units, eps=1e-8)
@@ -412,10 +407,14 @@ class BERT4Rec(torch.nn.Module):
             new_fwd_layer = PointWiseFeedForward2(args.hidden_units, args.hidden_units*4, args.dropout_rate)
             self.forward_layers.append(new_fwd_layer)
 
-        self.out = nn.Linear(self.bert.hidden, args.num_items + 1)
+        self.out = torch.nn.Linear(args.hidden_units, args.hidden_units)
+        self.out_bias = torch.nn.Parameter(torch.zeros(self.item_num+1)).cuda()
+
+    def GELU(self, x):
+        return 0.5 * x * (1 + torch.tanh(np.sqrt(2 / np.pi) * (x + 0.044715 * torch.pow(x, 3))))
 
     def log2feats(self, log_seqs):
-        mask = (log_seqs > 0).unsqueeze(1).repeat(1, log_seqs.size(1), 1).unsqueeze(1)
+        mask = (log_seqs > 0).unsqueeze(1).repeat(1, log_seqs.size(1), 1).unsqueeze(1).to(self.dev)
 
         # embedding the indexed sequence to sequence of vectors
         seqs = self.item_emb(log_seqs.to(self.dev))
@@ -434,17 +433,21 @@ class BERT4Rec(torch.nn.Module):
             seqs = self.forward_layernorms[i](seqs)
             seqs = self.forward_layers[i](seqs)
 
-        return self.out(x)
+        return self.out(seqs)
 
     def forward(self, seqs):
-        logits = self.log2feats(seqs)  # B x T x V
+        final_feat = self.log2feats(seqs)  # B x T x V
+        item_embs = self.item_emb(torch.arange(0,self.item_num+1).to(self.dev))
+        logits = item_embs.matmul(final_feat.unsqueeze(-1)).squeeze(-1) 
+        #logits = self.GELU(logits) + self.out_bias, causing out of memory issues
         logits = logits.view(-1, logits.size(-1))  # (B*T) x V
 
         return logits
 
     def predict(self, seqs, candidates):
-        scores = self.model(seqs)  # B x T x V
-        scores = scores[:, -1, :]  # B x V
-        scores = scores.gather(1, candidates)  # B x C
+        scores = self.forward(seqs)  # T x V
+        scores = scores[-1, :]  # V
+        candidates = candidates.to(self.dev)
+        scores = scores.gather(0, candidates)  # C
 
         return scores

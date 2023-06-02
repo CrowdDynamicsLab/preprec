@@ -13,8 +13,8 @@ def str2bool(s):
     return s == 'true'
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--dataset', required=True)
-parser.add_argument('--train_dir', default='test', type=str)
+parser.add_argument('--dataset', required=True, help='amazon/amazon_tool | amazon/amazon_office')
+parser.add_argument('--train_dir', default='test', type=str, help='directory to write model to')
 parser.add_argument('--batch_size', default=128, type=int)
 parser.add_argument('--lr', default=0.001, type=float)
 parser.add_argument('--maxlen', default=200, type=int)
@@ -23,24 +23,30 @@ parser.add_argument('--num_blocks', default=2, type=int)
 parser.add_argument('--num_epochs', default=201, type=int)
 parser.add_argument('--num_heads', default=1, type=int)
 parser.add_argument('--dropout_rate', default=0.2, type=float)
-parser.add_argument('--l2_emb', default=0.0, type=float)
+parser.add_argument('--l2_emb', default=0.0, type=float, help = 'weight of l2 loss of embedding')
 parser.add_argument('--device', default='cuda', type=str)
 parser.add_argument('--inference_only',  action='store_true')
+parser.add_argument('--mode', default='valid', type=str, help='valid | test')
 parser.add_argument('--state_dict_path', default=None, type=str)
-parser.add_argument('--model', default='our', type=str, help='our | mostpop | sasrec | bert4rec')
-parser.add_argument('--monthpop', default='wtembed', type=str)
-parser.add_argument('--weekpop', default='week_embed2', type=str)
-parser.add_argument('--rawpop', default='cumpop', type=str)
-parser.add_argument('--base_dim1', default=11, type=int)
-parser.add_argument('--input_units1', default=132, type=int)
-parser.add_argument('--base_dim2', default=6, type=int)
-parser.add_argument('--input_units2', default=24, type=int)
+parser.add_argument('--model', default='newrec', type=str, help='newrec | mostpop | sasrec | bert4rec')
+parser.add_argument('--monthpop', default='wtembed', type=str, help='format of month popularity: wtembed (time-weighted) | currembed (current month) | cumembed (cumulative)')
+parser.add_argument('--weekpop', default='week_embed2', type=str, help='format of week popularity: current is 4-week popularity')
+parser.add_argument('--rawpop', default='cumpop', type=str, help='format of popularity for mostpop model: current is cumulative')
+parser.add_argument('--base_dim1', default=11, type=int, help='dimension of month popularity vector, newrec only')
+parser.add_argument('--input_units1', default=132, type=int, help='base_dim1 * number of months considered, newrec only')
+parser.add_argument('--base_dim2', default=6, type=int, help='dimension of week popularity vector, newrec only')
+parser.add_argument('--input_units2', default=6, type=int, help='base_dim2 * number of weeks considered, newrec only')
+parser.add_argument('--mask_prob', default=0, type=float, help='cloze task, bert4rec only')
 parser.add_argument('--seed', default=2023, type=int)
-parser.add_argument('--topk', default=10, type=int)
-parser.add_argument('--augment',  action='store_true')
-parser.add_argument('--transfer',  action='store_true')
+parser.add_argument('--topk', default=10, type=int, help='# items for evaluation')
+parser.add_argument('--augment', action='store_true', help='use data augmentation, newrec only')
+parser.add_argument('--transfer', action='store_true', help='zero-shot transfer, newrec only')
+parser.add_argument('--max_split_size', default=-1.0, type=float)
 
 args = parser.parse_args()
+
+if args.max_split_size != -1.0:
+    os.environ["PYTORCH_CUDA_ALLOC_CONF"] = f"max_split_size_mb:{str(args.max_split_size)}"
 
 write = 'res/' + args.dataset + '/' + args.train_dir + '/'
 if not os.path.isdir(write):
@@ -55,19 +61,19 @@ if __name__ == '__main__':
     np.random.seed(args.seed) 
 
     no_use_time = ['sasrec', 'bert4rec']
-    use_time = ['our', 'mostpop']
+    use_time = ['newrec', 'mostpop']
 
     # global dataset
     if args.model in no_use_time:
         dataset = data_partition2(args.dataset)
-        [user_train, user_test, usernum, itemnum] = dataset
+        [user_train, user_valid, user_test, usernum, itemnum] = dataset
     elif args.model in use_time:
-        if args.augment:
+        if args.model == 'newrec' and args.augment:
             dataset = data_partition(args.dataset, args.maxlen)
-            [user_train, user_test, usernum, itemnum, user_dict] = dataset
+            [user_train, user_valid, user_test, usernum, itemnum, user_dict] = dataset
         else:
             dataset = data_partition(args.dataset)
-            [user_train, user_test, usernum, itemnum] = dataset
+            [user_train, user_valid, user_test, usernum, itemnum] = dataset
     print("done loading data!")
 
     num_batch = len(user_train) // args.batch_size
@@ -77,19 +83,19 @@ if __name__ == '__main__':
     # no training needed for most popular rec
     if args.model == 'mostpop':
         t_test = evaluate(None, dataset, args) 
-        print('test (NDCG@%d: %.4f, HR@%d: %.4f)' % (args.topk, t_test[0], args.topk, t_test[1]))
+        print('%s (NDCG@%d: %.4f, HR@%d: %.4f)' % (args.mode, args.topk, t_test[0], args.topk, t_test[1]))
         sys.exit() 
     
-    sampler = WarpSampler(user_train, usernum, itemnum, args.model, batch_size=args.batch_size, maxlen=args.maxlen, n_workers=3, augment=args.augment)
+    sampler = WarpSampler(user_train, usernum, itemnum, args.model, batch_size=args.batch_size, maxlen=args.maxlen, n_workers=3, mask_prob = args.mask_prob, augment=args.augment)
     if args.model == 'sasrec':
         model = SASRec(usernum, itemnum, args).to(args.device)
-    elif args.model == 'our':
+    elif args.model == 'newrec':
         model = NewRec(usernum, itemnum, args).to(args.device)
     elif args.model == 'bert4rec':
-        model = BERT4Rec(usernum, itemnum, args).to(args.device)
+        model = BERT4Rec(itemnum, args).to(args.device)
     
     for name, param in model.named_parameters():
-        if name == 'embed_layer.fc1.bias' or name == 'embed_layer.fc12.bias': # for our model only
+        if name == 'embed_layer.fc1.bias' or name == 'embed_layer.fc12.bias': # for newrec model only
             torch.nn.init.zeros_(param.data)
         try:
             torch.nn.init.xavier_normal_(param.data)
@@ -101,7 +107,7 @@ if __name__ == '__main__':
     epoch_start_idx = 1
     if args.state_dict_path is not None:
         try:
-            if args.transfer: # for our model only
+            if args.transfer: # for newrec model only
                 loaded = torch.load(args.state_dict_path, map_location=torch.device(args.device))
                 # preprocessing specific to each dataset isn't transferred
                 for key in ['popularity_enc.month_pop_table', 'popularity_enc.week_pop_table', 'position_enc.pos_table']:
@@ -120,7 +126,7 @@ if __name__ == '__main__':
     if args.inference_only:
         model.eval()
         t_test = evaluate(model, dataset, args)
-        print('test (NDCG@%d: %.4f, HR@%d: %.4f)' % (args.topk, t_test[0], args.topk, t_test[1]))
+        print('%s (NDCG@%d: %.4f, HR@%d: %.4f)' % (args.mode, args.topk, t_test[0], args.topk, t_test[1]))
     
     adam_optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, betas=(0.9, 0.98))
     
@@ -146,18 +152,19 @@ if __name__ == '__main__':
                 print("loss in epoch {} iteration {}: {}".format(epoch, step, loss.item()))
 
         elif args.model == 'bert4rec':
-            ce = torch.nn.CrossEntropyLoss(ignore_index=0)
+            ce = torch.nn.CrossEntropyLoss()
             for step in range(num_batch):
                 seqs, labels = sampler.next_batch()
-                seqs, labels = torch.LongTensor(seqs), torch.LongTensor(labels, device=args.device).view(-1)
+                seqs, labels = torch.LongTensor(seqs), torch.LongTensor(labels).to(args.device).view(-1)
                 logits = model(seqs)
                 adam_optimizer.zero_grad()
-                loss = ce(logits, labels)
+                indices = torch.where(labels != 0)
+                loss = ce(logits[indices], labels[indices])
                 loss.backward()
                 adam_optimizer.step()
                 print("loss in epoch {} iteration {}: {}".format(epoch, step, loss.item()))
 
-        elif args.model == 'our':
+        elif args.model == 'newrec':
             bce_criterion = torch.nn.BCEWithLogitsLoss()
             for step in range(num_batch):
                 u, seq, time1, time2, pos, neg = sampler.next_batch() 
@@ -177,11 +184,11 @@ if __name__ == '__main__':
             t1 = time.time() - t0
             T += t1
             print('Evaluating', end='')
-            t_test = evaluate(model, dataset, args)
-            print('epoch:%d, time: %f(s), test (NDCG@%d: %.4f, HR@%d: %.4f)'
-                    % (epoch, T, args.topk, t_test[0], args.topk, t_test[1]))
+            t_valid = evaluate(model, dataset, args)
+            print('epoch:%d, time: %f(s), %s (NDCG@%d: %.4f, HR@%d: %.4f)'
+                    % (epoch, T, args.mode, args.topk, t_valid[0], args.topk, t_valid[1]))
     
-            f.write(str(t_valid) + ' ' + str(t_test) + '\n')
+            f.write(str(t_valid[0]) + ' ' + str(t_valid[1]) + '\n')
             f.flush()
             t0 = time.time()
             model.train()
