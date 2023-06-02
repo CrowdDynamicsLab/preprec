@@ -206,10 +206,14 @@ class NewRec(torch.nn.Module):
         self.item_num = item_num
         self.dev = args.device
         self.model = args.model
+        self.no_fixed_emb = args.no_fixed_emb
 
         self.popularity_enc = PopularityEncoding(args) 
         self.embed_layer = InitFeedForward(args.input_units1 + args.input_units2, args.hidden_units*2, args.hidden_units)
-        self.position_enc = PositionalEncoding(args.hidden_units, args.maxlen)
+        if self.no_fixed_emb:
+            self.pos_emb = torch.nn.Embedding(args.maxlen, args.hidden_units) 
+        else:
+            self.position_enc = PositionalEncoding(args.hidden_units, args.maxlen)
 
         self.attention_layernorms = torch.nn.ModuleList() # to be Q for self-attention
         self.attention_layers = torch.nn.ModuleList()
@@ -238,7 +242,12 @@ class NewRec(torch.nn.Module):
         # obtain popularity-based feature vectors for sequence history, apply embedding layer, add positional encoding
         seqs = self.popularity_enc(log_seqs, time1_seqs, time2_seqs)
         seqs = self.embed_layer(seqs)
-        seqs = self.position_enc(seqs)
+        if self.no_fixed_emb:
+            positions = np.tile(np.array(range(log_seqs.shape[1])), [log_seqs.shape[0], 1])
+            seqs += self.pos_emb(torch.LongTensor(positions).to(self.dev))
+            # seqs = self.emb_dropout(seqs)
+        else:
+            seqs = self.position_enc(seqs)
 
         timeline_mask = torch.BoolTensor(log_seqs == 0).to(self.dev)
         seqs *= ~timeline_mask.unsqueeze(-1) # broadcast in last dim
@@ -407,8 +416,8 @@ class BERT4Rec(torch.nn.Module):
             new_fwd_layer = PointWiseFeedForward2(args.hidden_units, args.hidden_units*4, args.dropout_rate)
             self.forward_layers.append(new_fwd_layer)
 
-        self.out = torch.nn.Linear(args.hidden_units, args.hidden_units)
-        self.out_bias = torch.nn.Parameter(torch.zeros(self.item_num+1)).cuda()
+        self.out = torch.nn.Linear(args.hidden_units, self.item_num+1)
+        # self.out_bias = torch.nn.Parameter(torch.zeros(self.item_num+1)).cuda()
 
     def GELU(self, x):
         return 0.5 * x * (1 + torch.tanh(np.sqrt(2 / np.pi) * (x + 0.044715 * torch.pow(x, 3))))
@@ -436,10 +445,10 @@ class BERT4Rec(torch.nn.Module):
         return self.out(seqs)
 
     def forward(self, seqs):
-        final_feat = self.log2feats(seqs)  # B x T x V
-        item_embs = self.item_emb(torch.arange(0,self.item_num+1).to(self.dev))
-        logits = item_embs.matmul(final_feat.unsqueeze(-1)).squeeze(-1) 
-        #logits = self.GELU(logits) + self.out_bias, causing out of memory issues
+        logits = self.log2feats(seqs)  # B x T x V
+        # item_embs = self.item_emb(torch.arange(0,self.item_num+1).to(self.dev))
+        # logits = item_embs.matmul(final_feat.unsqueeze(-1)).squeeze(-1) 
+        #logits = self.GELU(logits) + self.out_bias, causing out of memory issues and works worse
         logits = logits.view(-1, logits.size(-1))  # (B*T) x V
 
         return logits

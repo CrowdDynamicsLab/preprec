@@ -42,6 +42,7 @@ parser.add_argument('--topk', default=10, type=int, help='# items for evaluation
 parser.add_argument('--augment', action='store_true', help='use data augmentation, newrec only')
 parser.add_argument('--transfer', action='store_true', help='zero-shot transfer, newrec only')
 parser.add_argument('--max_split_size', default=-1.0, type=float)
+parser.add_argument('--no_fixed_emb', action='store_false', help='for now, available in newrec only')
 
 args = parser.parse_args()
 
@@ -152,14 +153,14 @@ if __name__ == '__main__':
                 print("loss in epoch {} iteration {}: {}".format(epoch, step, loss.item()))
 
         elif args.model == 'bert4rec':
-            ce = torch.nn.CrossEntropyLoss()
+            ce = torch.nn.CrossEntropyLoss(ignore_index=0)
             for step in range(num_batch):
                 seqs, labels = sampler.next_batch()
                 seqs, labels = torch.LongTensor(seqs), torch.LongTensor(labels).to(args.device).view(-1)
                 logits = model(seqs)
                 adam_optimizer.zero_grad()
-                indices = torch.where(labels != 0)
-                loss = ce(logits[indices], labels[indices])
+                # indices = torch.where(labels != 0)
+                loss = ce(logits, labels)
                 loss.backward()
                 adam_optimizer.step()
                 print("loss in epoch {} iteration {}: {}".format(epoch, step, loss.item()))

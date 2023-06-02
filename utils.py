@@ -167,7 +167,7 @@ def data_partition(fname, maxlen = None):
     user_valid = {}
     user_test = {}
     # assume user/item index start from 0, assume user interactions are sorted by time
-    f = open(f'../data/{fname}_int.csv', 'r')
+    f = open(f'../data/{fname}_int2.csv', 'r')
     for line in f:
         u, i, t, t2 = line.rstrip().split(',')
         u = int(u) + 1
@@ -226,7 +226,7 @@ def data_partition2(fname):
     user_valid = {}
     user_test = {}
     # assume user/item index starting from 1
-    f = open(f'../data/{fname}_int.csv', 'r')
+    f = open(f'../data/{fname}_int2.csv', 'r')
     for line in f:
         u, i = line.rstrip().split(',')[0:2]
         u = int(u)
