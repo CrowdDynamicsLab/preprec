@@ -42,7 +42,7 @@ parser.add_argument('--topk', default=10, type=int, help='# items for evaluation
 parser.add_argument('--augment', action='store_true', help='use data augmentation, newrec only')
 parser.add_argument('--transfer', action='store_true', help='zero-shot transfer, newrec only')
 parser.add_argument('--max_split_size', default=-1.0, type=float)
-parser.add_argument('--no_fixed_emb', action='store_false', help='for now, available in newrec only')
+parser.add_argument('--no_fixed_emb', action='store_true', help='for now, available in newrec only')
 
 args = parser.parse_args()
 
