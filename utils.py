@@ -7,6 +7,7 @@ from collections import defaultdict
 from multiprocessing import Process, Queue
 import pdb
 import math
+from scipy.stats import rankdata, percentileofscore
 
 # sampler for batch generation
 def random_neq(l, r, s):
@@ -96,14 +97,12 @@ def sample_function_bert4rec(user_train, usernum, itemnum, batch_size, maxlen, m
             prob = np.random.random()
             if prob < mask_prob:
                 prob /= mask_prob
-
                 if prob < 0.8:
                     tokens.append(0)
                 elif prob < 0.9:
                     tokens.append(np.random.randint(1, itemnum + 1))
                 else:
                     tokens.append(s)
-
                 labels.append(s)
             else:
                 tokens.append(s)
@@ -111,9 +110,7 @@ def sample_function_bert4rec(user_train, usernum, itemnum, batch_size, maxlen, m
 
         tokens = tokens[-maxlen:]
         labels = labels[-maxlen:]
-
         mask_len = maxlen - len(tokens)
-
         tokens = [0] * mask_len + tokens
         labels = [0] * mask_len + labels
 
@@ -128,10 +125,32 @@ def sample_function_bert4rec(user_train, usernum, itemnum, batch_size, maxlen, m
         result_queue.put(zip(*one_batch))
 
 
+def sample_function_bprmf(user_train, usernum, itemnum, batch_size, maxlen, mask_prob, result_queue, SEED):
+    def sample():
+
+        user = np.random.randint(1, usernum + 1)
+        while len(user_train[user]) <= 1: user = np.random.randint(1, usernum + 1)
+        pos = np.pad(np.random.permutation(user_train[user]), (0, maxlen - len(user_train[user])), 'constant')
+        neg = np.zeros([maxlen], dtype=np.int32)
+        ts = set(user_train[user])
+        for i in range(len(user_train[user])):
+            neg[i] = random_neq(1, itemnum + 1, ts)
+        return user, pos, neg
+
+    np.random.seed(SEED)
+    while True:
+        one_batch = []
+        for i in range(batch_size):
+            one_batch.append(sample())
+
+        result_queue.put(zip(*one_batch))
+
+
 class WarpSampler(object):
     def __init__(self, User, usernum, itemnum, model, batch_size=64, maxlen=10, n_workers=1, mask_prob=0, augment=False):
         self.result_queue = Queue(maxsize=n_workers * 10)
         self.processors = []
+
         if augment:
             usernum = len(User)
 
@@ -141,6 +160,9 @@ class WarpSampler(object):
             func = sample_function_sasrec
         elif model == 'bert4rec':
             func = sample_function_bert4rec
+        elif model == 'bprmf':
+            func = sample_function_bprmf
+            maxlen = max([len(x) for x in User.values()])
 
         for i in range(n_workers):
             self.processors.append(Process(target=func, args=(
@@ -218,7 +240,8 @@ def data_partition(fname, maxlen = None):
     return [user_train, user_valid, user_test, usernum, itemnum, user_dict] 
 
 
-def data_partition2(fname):
+def data_partition2(fname, wrong_num):
+    add = 0 if wrong_num else 1
     usernum = 0
     itemnum = 0
     User = defaultdict(list)
@@ -229,8 +252,8 @@ def data_partition2(fname):
     f = open(f'../data/{fname}_int2.csv', 'r')
     for line in f:
         u, i = line.rstrip().split(',')[0:2]
-        u = int(u)
-        i = int(i)
+        u = int(u) + add
+        i = int(i) + add
         usernum = max(u, usernum)
         itemnum = max(i, itemnum)
         User[u].append(i)
@@ -248,222 +271,456 @@ def data_partition2(fname):
     return [user_train, user_valid, user_test, usernum, itemnum]
 
 
+def data_partition3(fname):
+    usernum = 0
+    itemnum = 0
+    User = defaultdict(list)
+    user_train = {}
+    user_valid = {}
+    user_test = {}
+    # assume user/item index starting from 1
+    f = open(f'../data/{fname}_int2.csv', 'r')
+    for line in f:
+        u, i = line.rstrip().split(',')[0:2]
+        u = int(u) + 1
+        i = int(i) + 1
+        usernum = max(u, usernum)
+        itemnum = max(i, itemnum)
+        User[u].append(i)
+
+    for user in User:
+        nfeedback = len(User[user])
+        if nfeedback < 3:
+            user_train[user] = User[user]
+            user_valid[user] = []
+            user_test[user] = []
+        else:
+            validi = np.random.choice(nfeedback)
+            testi = np.random.choice(np.delete(np.arange(nfeedback, dtype=int), validi))
+            if max(validi, testi) > len(User[user])-1:
+                pdb.set_trace()
+            user_valid[user] = [User[user][validi]]
+            user_test[user] = [User[user][testi]]
+            user_train[user] = np.delete(User[user], [validi, testi])
+    return [user_train, user_valid, user_test, usernum, itemnum]
+
+
 def evaluate(model, dataset, args):
     if args.model == 'newrec':
-        return evaluate_newrec(model, dataset, args)
-    if args.model == 'sasrec':
-        return evaluate_sasrec(model, dataset, args)
-    if args.model == 'bert4rec':
-        return evaluate_bert4rec(model, dataset, args)
-    if args.model == 'mostpop':
-        return evaluate_mostpop(model, dataset, args)
+        predict = predict_newrec
+    elif args.model == 'mostpop':
+        predict = predict_mostpop
+    elif args.model == 'bprmf':
+        predict = predict_bprmf
+    elif args.model == 'sasrec':
+        predict = predict_sasrec
+    elif args.model == 'bert4rec':
+        predict = predict_bert4rec
 
+    if args.eval_quality:
+        userpop = np.loadtxt(f'../data/{args.dataset}_{args.userpop}.txt')
+        userpop = 100*rankdata(userpop)/len(userpop)
+        userpop[userpop > 99] = 99
+        numgroups = int(100//args.quality_size)
+        metrics = [([0.0 for _ in range(numgroups)], [0.0 for _ in range(numgroups)]) for _ in args.topk]
+        counts = [0 for _ in range(numgroups)]
+    else:
+        metrics = [[0.0, 0.0] for _ in args.topk]
 
-def evaluate_newrec(model, dataset, args):
+    valid_user = 0.0
+
     if args.augment:
         [train, valid, test, usernum, itemnum, userdict] = copy.deepcopy(dataset)
     else:
         [train, valid, test, usernum, itemnum] = copy.deepcopy(dataset)
-
-    NDCG = 0.0
-    HT = 0.0
-    valid_user = 0.0
-
-    if usernum>10000:
-        users = random.sample(range(1, usernum + 1), 10000)
-    else:
-        users = range(1, usernum + 1)
-
+    users = range(1, usernum + 1)
     evaluate = test if args.mode == 'test' else valid
+
+    if args.model == "mostpop":
+        misc = np.loadtxt(f'../data/{args.dataset}_{args.rawpop}.txt')
+    else:
+        misc = None
 
     for u in users:
         if len(train[u]) < 1 or len(evaluate[u]) < 1: continue
+        if args.model == "bprmf":
+            misc = u
+        rank = predict(model, evaluate[u], train[u], valid[u], test[u], itemnum, args, misc)
+        valid_user += 1
 
-        seq = [x[0] for x in train[u]]
-        t1 = [x[1] for x in train[u]]
-        t2 = [x[2] for x in train[u]]
-        if args.mode == 'test':
-            seq.append(valid[u][0][0])
-            t1.append(valid[u][0][1])
-            t2.append(valid[u][0][2])
-        seq = seq[-args.maxlen:]
-        padding_len = args.maxlen - len(seq)
-        seq = [0] * padding_len + seq
-        t1 = t1[-args.maxlen:]
-        t1 = [0] * padding_len + t1
-        t2 = t2[-args.maxlen:]
-        t2 = [0] * padding_len + t2
+        if args.eval_quality:
+            loc = int(userpop[u]//args.quality_size)
+            counts[loc] += 1
 
-        rated = set([x[0] for x in train[u]])
-        rated.add(valid[u][0][0])
-        rated.add(test[u][0][0])
-        item_idx = [evaluate[u][0][0]]
+        if args.eval_method != 3:
+            for i, k in enumerate(args.topk):
+                if rank < k:
+                    if args.eval_quality:
+                        metrics[i][0][loc] += 1 / np.log2(rank+2)
+                        metrics[i][1][loc] += 1
+                    else:
+                        metrics[i][0] += 1 / np.log2(rank+2)
+                        metrics[i][1] += 1
+        else:
+            for i, k in enumerate(args.topk):
+                if rank < k:
+                    metrics[i][0] += 1/np.log2(rank+2)
+                    metrics[i][1] += rank
+        if valid_user % 100 == 0:
+            print('.', end="")
+            sys.stdout.flush()
+
+    if args.eval_quality:
+        metrics = [[[metrics[i][j][k]/counts[k] for k in range(numgroups) if counts[k] != 0] for j in range(2)] for i in range(len(args.topk))]
+    else:
+        metrics = [[metrics[i][j]/valid_user for j in range(2)] for i in range(len(args.topk))]
+    if args.mode == 'test':
+        print(metrics)
+    return metrics
+
+
+def predict_newrec(model, evaluate, train, valid, test, itemnum, args, _):
+    seq = [x[0] for x in train]
+    t1 = [x[1] for x in train]
+    t2 = [x[2] for x in train]
+    if args.mode == 'test':
+        seq.append(valid[0][0])
+        t1.append(valid[0][1])
+        t2.append(valid[0][2])
+    seq = seq[-args.maxlen:]
+    padding_len = args.maxlen - len(seq)
+    seq = [0] * padding_len + seq
+    t1 = t1[-args.maxlen:]
+    t1 = [0] * padding_len + t1
+    t2 = t2[-args.maxlen:]
+    t2 = [0] * padding_len + t2
+
+    rated = set([x[0] for x in train])
+    rated.add(valid[0][0])
+    rated.add(test[0][0])
+
+    if args.eval_method == 1:
+        item_idx = [evaluate[0][0]]
         for _ in range(100):
             t = np.random.randint(1, itemnum + 1)
             while t in rated: t = np.random.randint(1, itemnum + 1)
             item_idx.append(t)
             rated.add(t)
 
-        predictions = -model.predict(*[np.array(l) for l in [[seq], [t1], [t2], item_idx]])
-        predictions = torch.flatten(predictions)
-        rank = predictions.argsort().argsort()[0].item()
+    elif args.eval_method == 2:
+        pass
+    
+    elif args.eval_method == 3:
+        item_idx = list(set(range(1, itemnum+1)).difference(rated))
+        item_idx.insert(0, evaluate[0][0])
 
-        valid_user += 1
-
-        if rank < args.topk:
-            NDCG += 1 / np.log2(rank + 2)
-            HT += 1
-        if valid_user % 100 == 0:
-            print('.', end="")
-            sys.stdout.flush()
-
-    return NDCG / valid_user, HT / valid_user
+    predictions = -model.predict(*[np.array(l) for l in [[seq], [t1], [t2], item_idx]])
+    predictions = torch.flatten(predictions)
+    rank = predictions.argsort().argsort()[0].item()
+    return rank
 
 
+def predict_mostpop(model, evaluate, train, valid, test, itemnum, args, rawpop):
+    if args.mode == 'test':
+        t1 = valid[-1][1]
+    else:
+        t1 = train[-1][1]
+    rated = set([x[0] for x in train])
+    rated.add(valid[0][0])
+    rated.add(test[0][0])
+
+    if args.eval_method == 1:
+        item_idx = [evaluate[0][0]]
+        for _ in range(100):
+            t = np.random.randint(1, itemnum + 1)
+            while t in rated: t = np.random.randint(1, itemnum + 1)
+            item_idx.append(t)
+            rated.add(t)
+
+    elif args.eval_method == 2:
+        pass
+    
+    elif args.eval_method == 3:
+        item_idx = list(set(range(1, itemnum+1)).difference(rated))
+        item_idx.insert(0, evaluate[0][0])
+
+    predictions = -rawpop[t1,item_idx]
+    rank = predictions.argsort().argsort()[0].item()
+    return rank
+
+
+def predict_bprmf(model, evaluate, train, valid, test, itemnum, args, u):
+    rated = set(train)
+    rated.add(valid[0])
+    rated.add(test[0])
+
+    if args.eval_method == 1:
+        item_idx = [evaluate[0]]
+        for _ in range(100):
+            t = np.random.randint(1, itemnum + 1)
+            while t in rated: t = np.random.randint(1, itemnum + 1)
+            item_idx.append(t)
+            rated.add(t)
+
+    elif args.eval_method == 2:
+        pass
+    
+    elif args.eval_method == 3:
+        item_idx = list(set(range(1, itemnum+1)).difference(rated))
+        item_idx.insert(0, evaluate[0])
+
+    predictions = -model.predict(*[np.array(l) for l in [[u], item_idx]])
+    predictions = torch.flatten(predictions) # - for 1st argsort DESC
+
+    rank = predictions.argsort().argsort()[0].item()
+    return rank
+
+
+def predict_sasrec(model, evaluate, train, valid, test, itemnum, args, _):
+    seq = train
+    if args.mode == 'test':
+        seq.append(valid[0])
+    seq = seq[-args.maxlen:]
+    padding_len = args.maxlen - len(seq)
+    seq = [0] * padding_len + seq
+
+    rated = set(train)
+    rated.add(valid[0])
+    rated.add(test[0])
+
+    if args.eval_method == 1:
+        item_idx = [evaluate[0]]
+        for _ in range(100):
+            t = np.random.randint(1, itemnum + 1)
+            while t in rated: t = np.random.randint(1, itemnum + 1)
+            item_idx.append(t)
+            rated.add(t)
+
+    elif args.eval_method == 2:
+        pass
+    
+    elif args.eval_method == 3:
+        item_idx = list(set(range(1, itemnum+1)).difference(rated))
+        item_idx.insert(0, evaluate[0])
+
+    predictions = -model.predict(*[np.array(l) for l in [[seq], item_idx]])
+    predictions = torch.flatten(predictions) # - for 1st argsort DESC
+
+    rank = predictions.argsort().argsort()[0].item()
+    return rank
+
+
+def predict_bert4rec(model, evaluate, train, valid, test, itemnum, args, _):
+    if args.mode == 'test':
+        seq = train + valid + [0]
+    else:
+        seq = train + [0]
+    seq = seq[-args.maxlen:]
+    padding_len = args.maxlen - len(seq)
+    seq = [0] * padding_len + seq
+
+    rated = set(train)
+    rated.add(valid[0])
+    rated.add(test[0])
+
+    if args.eval_method == 1:
+        item_idx = [evaluate[0]]
+        for _ in range(100):
+            t = np.random.randint(1, itemnum + 1)
+            while t in rated: t = np.random.randint(1, itemnum + 1)
+            item_idx.append(t)
+            rated.add(t)
+
+    elif args.eval_method == 2:
+        pass
+    
+    elif args.eval_method == 3:
+        item_idx = list(set(range(1, itemnum+1)).difference(rated))
+        item_idx.insert(0, evaluate[0])
+
+    predictions = -model.predict(*[torch.LongTensor([seq]), torch.LongTensor(item_idx)])
+    predictions = torch.flatten(predictions) # - for 1st argsort DESC
+
+    rank = predictions.argsort().argsort()[0].item()
+    return rank
+
+'''
 def evaluate_mostpop(model, dataset, args):
-    [train, valid, test, usernum, itemnum] = copy.deepcopy(dataset)
+    metrics = [[0.0, 0.0] for _ in args.topk]
 
-    NDCG = 0.0
-    HT = 0.0
     valid_user = 0.0
 
-    if usernum>10000:
-        users = random.sample(range(1, usernum + 1), 10000)
-    else:
-        users = range(1, usernum + 1)
-    
+    [train, valid, test, usernum, itemnum] = copy.deepcopy(dataset)
+    users = range(1, usernum + 1)
+    evaluate = test if args.mode == 'test' else valid
     raw_pop = np.loadtxt(f'../data/{args.dataset}_{args.rawpop}.txt')
 
-    evaluate = test if args.mode == 'test' else valid
-
     for u in users:
         if len(train[u]) < 1 or len(evaluate[u]) < 1: continue
 
-        if args.mode == 'test':
-            t1 = valid[u][-1][1]
-        else:
-            t1 = train[u][-1][1]
-        rated = set([x[0] for x in train[u]])
-        rated.add(valid[u][0][0])
-        rated.add(test[u][0][0])
-        item_idx = [evaluate[u][0][0]]
-        for _ in range(100):
-            t = np.random.randint(1, itemnum + 1)
-            while t in rated: t = np.random.randint(1, itemnum + 1)
-            item_idx.append(t)
-            rated.add(t)
-
-        predictions = -raw_pop[t1,item_idx]
-        rank = predictions.argsort().argsort()[0].item()
 
         valid_user += 1
 
-        if rank < args.topk:
-            NDCG += 1 / np.log2(rank + 2)
-            HT += 1
+        if args.eval_quality:
+            counts[locs[int(userpop[u]//scale)]] += 1
+
+        if args.eval_method != 3:
+            for i, k in enumerate(args.topk):
+                if rank < args.topk:
+                    if args.eval_quality:
+                        metrics[i][0][locs[int(userpop[u]//scale)]] += 1 / np.log2(rank+2)
+                        metrics[i][1][locs[int(userpop[u]//scale)]] += 1
+                    else:
+                        metrics[i][0] += 1 / np.log2(rank+2)
+                        metrics[i][1] += 1
+        else:
+            for i, k in enumerate(args.topk):
+                metrics[i][0] += 1/np.log2(rank+2)
+                metrics[i][1] += rank
         if valid_user % 100 == 0:
             print('.', end="")
             sys.stdout.flush()
 
-    return NDCG / valid_user, HT / valid_user
+    metrics = [[metrics[i][j]/valid_user for j in range(2)] for i in range(len(args.topk))]
+    print(metrics)
+    return metrics
+
+
+def evaluate_bprmf(model, dataset, args):
+    metrics = [[0.0, 0.0] for _ in args.topk]
+
+    valid_user = 0.0
+
+    [train, valid, test, usernum, itemnum] = copy.deepcopy(dataset)
+    users = range(1, usernum + 1)
+    evaluate = test if args.mode == 'test' else valid
+    for u in users:
+        if len(train[u]) < 1 or len(evaluate[u]) < 1: continue
+
+
+        valid_user += 1
+
+        if args.eval_quality:
+            counts[locs[int(userpop[u]//scale)]] += 1
+
+        if args.eval_method != 3:
+            for i, k in enumerate(args.topk):
+                if rank < args.topk:
+                    if args.eval_quality:
+                        metrics[i][0][locs[int(userpop[u]//scale)]] += 1 / np.log2(rank+2)
+                        metrics[i][1][locs[int(userpop[u]//scale)]] += 1
+                    else:
+                        metrics[i][0] += 1 / np.log2(rank+2)
+                        metrics[i][1] += 1
+        else:
+            for i, k in enumerate(args.topk):
+                metrics[i][0] += 1/np.log2(rank+2)
+                metrics[i][1] += rank
+        if valid_user % 100 == 0:
+            print('.', end="")
+            sys.stdout.flush()
+
+    metrics = [[metrics[i][j]/valid_user for j in range(2)] for i in range(len(args.topk))]
+    print(metrics)
+    return metrics
 
 
 def evaluate_sasrec(model, dataset, args):
-    [train, valid, test, usernum, itemnum] = copy.deepcopy(dataset)
-
-    NDCG = 0.0
-    HT = 0.0
+    if args.eval_quality:
+        userpop = np.loadtxt(f'../data/{args.dataset}_{args.userpop}.txt')
+        userpop[userpop >= 99.9] = 99.9
+        locs = dict(zip(np.unique(userpop), rankdata(np.unique(userpop))))
+        nums = len(np.unique(userpop))
+        scale = len(locs)/10
+        metrics = [([0.0 for _ in range(10)], [0.0 for _ in range(10)]) for _ in args.topk]
+        counts = [0 for _ in range(10)]
+    else:
+        metrics = [[0.0, 0.0] for _ in args.topk]
     valid_user = 0.0
 
-    if usernum>10000:
-        users = random.sample(range(1, usernum + 1), 10000)
-    else:
-        users = range(1, usernum + 1)
-
+    [train, valid, test, usernum, itemnum] = copy.deepcopy(dataset)
+    users = range(1, usernum + 1)
     evaluate = test if args.mode == 'test' else valid
-
     for u in users:
         if len(train[u]) < 1 or len(evaluate[u]) < 1: continue
 
-        seq = train[u]
-        if args.mode == 'test':
-            seq.append(valid[u][0])
-        seq = seq[-args.maxlen:]
-        padding_len = args.maxlen - len(seq)
-        seq = [0] * padding_len + seq
-
-        rated = set(train[u])
-        rated.add(valid[u][0])
-        rated.add(test[u][0])
-        item_idx = [evaluate[u][0]]
-        for _ in range(100):
-            t = np.random.randint(1, itemnum + 1)
-            while t in rated: t = np.random.randint(1, itemnum + 1)
-            item_idx.append(t)
-
-        predictions = -model.predict(*[np.array(l) for l in [[seq], item_idx]])
-        predictions = torch.flatten(predictions) # - for 1st argsort DESC
-
-        rank = predictions.argsort().argsort()[0].item()
-
         valid_user += 1
 
-        if rank < args.topk:
-            NDCG += 1 / np.log2(rank + 2)
-            HT += 1
+        if args.eval_quality:
+            counts[locs[int(userpop[u]//scale)]] += 1
+
+        if args.eval_method != 3:
+            for i, k in enumerate(args.topk):
+                if rank < args.topk:
+                    if args.eval_quality:
+                        metrics[i][0][locs[int(userpop[u]//scale)]] += 1 / np.log2(rank+2)
+                        metrics[i][1][locs[int(userpop[u]//scale)]] += 1
+                    else:
+                        metrics[i][0] += 1 / np.log2(rank+2)
+                        metrics[i][1] += 1
+        else:
+            for i, k in enumerate(args.topk):
+                metrics[i][0] += 1/np.log2(rank+2)
+                metrics[i][1] += rank
         if valid_user % 100 == 0:
             print('.', end="")
             sys.stdout.flush()
 
-    return NDCG / valid_user, HT / valid_user
+    if args.eval_quality:
+        metrics = [[[metrics[i][j][k]/counts[k] for k in range(10) if counts[k] != 0] for j in range(2)] for i in range(len(args.topk))]
+    else:
+        metrics = [[metrics[i][j]/valid_user for j in range(2)] for i in range(len(args.topk))]
+    print(metrics)
+    return metrics
 
 
 def evaluate_bert4rec(model, dataset, args):
-    [train, valid, test, usernum, itemnum] = copy.deepcopy(dataset)
+    if args.eval_quality:
+        userpop = np.loadtxt(f'../data/{args.dataset}_{args.userpop}.txt')
+        userpop[userpop >= 99.9] = 99.9
+        locs = dict(zip(np.unique(userpop), rankdata(np.unique(userpop))))
+        nums = len(np.unique(userpop))
+        scale = len(locs)/10
+        metrics = [([0.0 for _ in range(10)], [0.0 for _ in range(10)]) for _ in args.topk]
+        counts = [0 for _ in range(10)]
+    else:
+        metrics = [[0.0, 0.0] for _ in args.topk]
 
-    NDCG = 0.0
-    HT = 0.0
     valid_user = 0.0
 
-    if usernum>10000:
-        users = random.sample(range(1, usernum + 1), 10000)
-    else:
-        users = range(1, usernum + 1)
-
+    [train, valid, test, usernum, itemnum] = copy.deepcopy(dataset)
+    users = range(1, usernum + 1)
     evaluate = test if args.mode == 'test' else valid
-
     for u in users:
         if len(train[u]) < 1 or len(evaluate[u]) < 1: continue
 
-        if args.mode == 'test':
-            seq = train[u] + valid[u] + [0]
-        else:
-            seq = train[u] + [0]
-        seq = seq[-args.maxlen:]
-        padding_len = args.maxlen - len(seq)
-        seq = [0] * padding_len + seq
-
-        rated = set(train[u])
-        rated.add(valid[u][0])
-        rated.add(test[u][0])
-        item_idx = [evaluate[u][0]]
-        for _ in range(100):
-            t = np.random.randint(1, itemnum + 1)
-            while t in rated: t = np.random.randint(1, itemnum + 1)
-            item_idx.append(t)
-
-        predictions = -model.predict(*[torch.LongTensor([seq]), torch.LongTensor(item_idx)])
-        predictions = torch.flatten(predictions) # - for 1st argsort DESC
-
-        rank = predictions.argsort().argsort()[0].item()
 
         valid_user += 1
 
-        if rank < args.topk:
-            NDCG += 1 / np.log2(rank + 2)
-            HT += 1
+        if args.eval_quality:
+            counts[locs[int(userpop[u]//scale)]] += 1
+
+        if args.eval_method != 3:
+            for i, k in enumerate(args.topk):
+                if rank < args.topk:
+                    if args.eval_quality:
+                        metrics[i][0][locs[int(userpop[u]//scale)]] += 1 / np.log2(rank+2)
+                        metrics[i][1][locs[int(userpop[u]//scale)]] += 1
+                    else:
+                        metrics[i][0] += 1 / np.log2(rank+2)
+                        metrics[i][1] += 1
+        else:
+            for i, k in enumerate(args.topk):
+                metrics[i][0] += 1/np.log2(rank+2)
+                metrics[i][1] += rank
         if valid_user % 100 == 0:
             print('.', end="")
             sys.stdout.flush()
 
-    return NDCG / valid_user, HT / valid_user
+    if args.eval_quality:
+        metrics = [[[metrics[i][j][k]/counts[k] for k in range(10) if counts[k] != 0] for j in range(2)] for i in range(len(args.topk))]
+    else:
+        metrics = [[metrics[i][j]/valid_user for j in range(2)] for i in range(len(args.topk))]
+    print(metrics)
+    return metrics
+    '''

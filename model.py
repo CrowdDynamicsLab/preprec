@@ -294,6 +294,35 @@ class NewRec(torch.nn.Module):
         return logits
 
 
+# taken from https://github.com/guoyang9/BPR-pytorch/tree/master
+class BPRMF(torch.nn.Module):
+    def __init__(self, user_num, item_num, args):
+        super(BPRMF, self).__init__()
+
+        self.user_emb = torch.nn.Embedding(user_num+1, args.hidden_units)
+        self.item_emb = torch.nn.Embedding(item_num+1, args.hidden_units)
+        self.dev = args.device
+
+        # nn.init.normal_(self.embed_user.weight, std=0.01)
+        # nn.init.normal_(self.embed_item.weight, std=0.01)
+
+    def forward(self, user, pos_item, neg_item):
+        user = self.user_emb(torch.LongTensor(user).to(self.dev))
+        item_i = self.item_emb(torch.LongTensor(pos_item).to(self.dev))
+        item_j = self.item_emb(torch.LongTensor(neg_item).to(self.dev))
+
+        prediction_i = item_i.matmul(user.unsqueeze(-1)).squeeze(-1)
+        prediction_j = item_j.matmul(user.unsqueeze(-1)).squeeze(-1)
+        # prediction_i = (user * item_i).sum(dim=-1)
+        # prediction_j = (user * item_j).sum(dim=-1)
+        return prediction_i, prediction_j
+
+    def predict(self, user, item_indices):
+        user = self.user_emb(torch.LongTensor(user).to(self.dev))
+        items = self.item_emb(torch.LongTensor(item_indices).to(self.dev))
+        logits = (user * items).sum(dim = -1)
+        return logits
+
 
 # taken from https://github.com/pmixer/SASRec.pytorch/blob/master/model.py
 class SASRec(torch.nn.Module):

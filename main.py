@@ -4,7 +4,7 @@ import torch
 import argparse
 import pdb 
 
-from model import SASRec, NewRec, BERT4Rec
+from model import SASRec, NewRec, BERT4Rec, BPRMF
 from utils import *
 
 def str2bool(s):
@@ -28,21 +28,26 @@ parser.add_argument('--device', default='cuda', type=str)
 parser.add_argument('--inference_only',  action='store_true')
 parser.add_argument('--mode', default='valid', type=str, help='valid | test')
 parser.add_argument('--state_dict_path', default=None, type=str)
-parser.add_argument('--model', default='newrec', type=str, help='newrec | mostpop | sasrec | bert4rec')
+parser.add_argument('--model', default='newrec', type=str, help='newrec | mostpop | sasrec | bert4rec | bprmf')
 parser.add_argument('--monthpop', default='wtembed', type=str, help='format of month popularity: wtembed (time-weighted) | currembed (current month) | cumembed (cumulative)')
 parser.add_argument('--weekpop', default='week_embed2', type=str, help='format of week popularity: current is 4-week popularity')
 parser.add_argument('--rawpop', default='cumpop', type=str, help='format of popularity for mostpop model: current is cumulative')
+parser.add_argument('--userpop', default='lastuserpop', type=str, help='ultimate user popularity used if eval_quality true')
 parser.add_argument('--base_dim1', default=11, type=int, help='dimension of month popularity vector, newrec only')
 parser.add_argument('--input_units1', default=132, type=int, help='base_dim1 * number of months considered, newrec only')
 parser.add_argument('--base_dim2', default=6, type=int, help='dimension of week popularity vector, newrec only')
 parser.add_argument('--input_units2', default=6, type=int, help='base_dim2 * number of weeks considered, newrec only')
 parser.add_argument('--mask_prob', default=0, type=float, help='cloze task, bert4rec only')
 parser.add_argument('--seed', default=2023, type=int)
-parser.add_argument('--topk', default=10, type=int, help='# items for evaluation')
+parser.add_argument('--topk','--list', nargs='+', default=[10], type=int, help='# items for evaluation')
 parser.add_argument('--augment', action='store_true', help='use data augmentation, newrec only')
 parser.add_argument('--transfer', action='store_true', help='zero-shot transfer, newrec only')
 parser.add_argument('--max_split_size', default=-1.0, type=float)
 parser.add_argument('--no_fixed_emb', action='store_true', help='for now, available in newrec only')
+parser.add_argument('--eval_method', default=1, type=int, help='1: random 100-size subset, 2: popularity 100-size subset, 3: full set')
+parser.add_argument('--eval_quality', action='store_true', help='evaluate across groups of user popularity')
+parser.add_argument('--quality_size', default=10, type=int, help='percentile size of group if eval_quality is True')
+parser.add_argument('--wrong_num', action='store_true', help='0-index users & items (for testing old runs)')
 
 args = parser.parse_args()
 
@@ -61,12 +66,13 @@ if __name__ == '__main__':
     random.seed(args.seed)
     np.random.seed(args.seed) 
 
+    unordered = ['bprmf']
     no_use_time = ['sasrec', 'bert4rec']
     use_time = ['newrec', 'mostpop']
 
     # global dataset
     if args.model in no_use_time:
-        dataset = data_partition2(args.dataset)
+        dataset = data_partition2(args.dataset, args.wrong_num)
         [user_train, user_valid, user_test, usernum, itemnum] = dataset
     elif args.model in use_time:
         if args.model == 'newrec' and args.augment:
@@ -75,6 +81,10 @@ if __name__ == '__main__':
         else:
             dataset = data_partition(args.dataset)
             [user_train, user_valid, user_test, usernum, itemnum] = dataset
+    elif args.model in unordered:
+        dataset = data_partition3(args.dataset)
+        [user_train, user_valid, user_test, usernum, itemnum] = dataset
+
     print("done loading data!")
 
     num_batch = len(user_train) // args.batch_size
@@ -84,7 +94,8 @@ if __name__ == '__main__':
     # no training needed for most popular rec
     if args.model == 'mostpop':
         t_test = evaluate(None, dataset, args) 
-        print('%s (NDCG@%d: %.4f, HR@%d: %.4f)' % (args.mode, args.topk, t_test[0], args.topk, t_test[1]))
+        for i, k in enumerate(args.topk):
+            print(f"{args.mode} (NDCG@{k}: {t_test[i][0]}, HR@{k}: {t_test[i][1]})")
         sys.exit() 
     
     sampler = WarpSampler(user_train, usernum, itemnum, args.model, batch_size=args.batch_size, maxlen=args.maxlen, n_workers=3, mask_prob = args.mask_prob, augment=args.augment)
@@ -94,6 +105,8 @@ if __name__ == '__main__':
         model = NewRec(usernum, itemnum, args).to(args.device)
     elif args.model == 'bert4rec':
         model = BERT4Rec(itemnum, args).to(args.device)
+    elif args.model == 'bprmf':
+        model = BPRMF(usernum, itemnum, args).to(args.device)
     
     for name, param in model.named_parameters():
         if name == 'embed_layer.fc1.bias' or name == 'embed_layer.fc12.bias': # for newrec model only
@@ -126,8 +139,9 @@ if __name__ == '__main__':
     
     if args.inference_only:
         model.eval()
-        t_test = evaluate(model, dataset, args)
-        print('%s (NDCG@%d: %.4f, HR@%d: %.4f)' % (args.mode, args.topk, t_test[0], args.topk, t_test[1]))
+        t_test = evaluate(model, dataset, args) 
+        for i, k in enumerate(args.topk):
+            print(f"{args.mode} (NDCG@{k}: {t_test[i][0]}, HR@{k}: {t_test[i][1]})")
     
     adam_optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, betas=(0.9, 0.98))
     
@@ -179,6 +193,19 @@ if __name__ == '__main__':
                 loss.backward()
                 adam_optimizer.step()
                 print("loss in epoch {} iteration {}: {}".format(epoch, step, loss.item())) 
+
+        elif args.model == 'bprmf':
+            # bce_criterion = torch.nn.BCEWithLogitsLoss()
+            for step in range(num_batch):
+                u, pos, neg = sampler.next_batch() 
+                u, pos, neg = np.array(u), np.array(pos), np.array(neg)
+                pos_logits, neg_logits = model(u, pos, neg)
+                adam_optimizer.zero_grad()
+                indices = np.where(pos != 0)
+                loss = - (pos_logits[indices] - neg_logits[indices]).sigmoid().log().sum()
+                loss.backward()
+                adam_optimizer.step()
+                print("loss in epoch {} iteration {}: {}".format(epoch, step, loss.item())) 
     
         if epoch % 20 == 0:
             model.eval()
@@ -186,10 +213,9 @@ if __name__ == '__main__':
             T += t1
             print('Evaluating', end='')
             t_valid = evaluate(model, dataset, args)
-            print('epoch:%d, time: %f(s), %s (NDCG@%d: %.4f, HR@%d: %.4f)'
-                    % (epoch, T, args.mode, args.topk, t_valid[0], args.topk, t_valid[1]))
+            print(f"epoch:{epoch}, time: {T} (NDCG@{args.topk[0]}: {t_valid[0][0]}, HR@{args.topk[0]}: {t_valid[0][1]})")
     
-            f.write(str(t_valid[0]) + ' ' + str(t_valid[1]) + '\n')
+            f.write(str(t_valid[0][0]) + ' ' + str(t_valid[0][1]) + '\n')
             f.flush()
             t0 = time.time()
             model.train()
