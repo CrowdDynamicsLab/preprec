@@ -180,7 +180,7 @@ class WarpSampler(object):
 
 
 # train/val/test data generation
-def data_partition(fname, maxlen = None):
+def data_partition(fname, maxlen = None, augfulllen = None):
     usernum = 0
     itemnum = 0
     User = defaultdict(list)
@@ -222,6 +222,8 @@ def data_partition(fname, maxlen = None):
             user_valid[user] = []
             user_test[user] = []
         else:
+            if augfulllen is not None:
+                User[user] = User[user][-augfulllen - 2:]
             numiter = math.ceil((nfeedback - maxlen - 2)/maxlen)
             if numiter > 0:
                 left = (nfeedback - maxlen - 2) % maxlen 

@@ -3,6 +3,7 @@ import time
 import torch
 import argparse
 import pdb 
+from scipy.spatial import distance_matrix
 
 from model import SASRec, NewRec, BERT4Rec, BPRMF
 from utils import *
@@ -41,6 +42,7 @@ parser.add_argument('--mask_prob', default=0, type=float, help='cloze task, bert
 parser.add_argument('--seed', default=2023, type=int)
 parser.add_argument('--topk','--list', nargs='+', default=[10], type=int, help='# items for evaluation')
 parser.add_argument('--augment', action='store_true', help='use data augmentation, newrec only')
+parser.add_argument('--augfulllen', default=0, type=int, help='length of full user history then split into augmented parts, 0 indicates no cutoff')
 parser.add_argument('--transfer', action='store_true', help='zero-shot transfer, newrec only')
 parser.add_argument('--max_split_size', default=-1.0, type=float)
 parser.add_argument('--no_fixed_emb', action='store_true', help='for now, available in newrec only')
@@ -48,6 +50,9 @@ parser.add_argument('--eval_method', default=1, type=int, help='1: random 100-si
 parser.add_argument('--eval_quality', action='store_true', help='evaluate across groups of user popularity')
 parser.add_argument('--quality_size', default=10, type=int, help='percentile size of group if eval_quality is True')
 parser.add_argument('--wrong_num', action='store_true', help='0-index users & items (for testing old runs)')
+parser.add_argument('--reg_loss', action='store_true', help='regularization loss on user final embeddings using trajectory')
+parser.add_argument('--reg_file', default='userhist', type=str, help='user vectors used in reg loss')
+parser.add_argument('--reg_num', default=10, type=int, help='# of positive and negative examples per user per batch for reg loss')
 
 args = parser.parse_args()
 
@@ -76,7 +81,7 @@ if __name__ == '__main__':
         [user_train, user_valid, user_test, usernum, itemnum] = dataset
     elif args.model in use_time:
         if args.model == 'newrec' and args.augment:
-            dataset = data_partition(args.dataset, args.maxlen)
+            dataset = data_partition(args.dataset, args.maxlen, None if args.augfulllen == 0 else args.augfulllen)
             [user_train, user_valid, user_test, usernum, itemnum, user_dict] = dataset
         else:
             dataset = data_partition(args.dataset)
@@ -131,7 +136,7 @@ if __name__ == '__main__':
                 model.load_state_dict(model_dict)
                 args.inference_only = True
             else:
-                model.load_state_dict(torch.load(args.state_dict_path, map_location=torch.device(args.device)))
+                model.load_state_dict(torch.load(args.state_dict_path, map_location=torch.device(args.device)), strict = False)
                 tail = args.state_dict_path[args.state_dict_path.find('epoch=') + 6:]
                 epoch_start_idx = int(tail[:tail.find('.')]) + 1
         except: 
@@ -147,6 +152,9 @@ if __name__ == '__main__':
     
     T = 0.0
     t0 = time.time()
+
+    if args.reg_loss:
+        user_feat = np.loadtxt(f'../data/{args.dataset}_{args.reg_file}.txt')
 
     for epoch in range(epoch_start_idx, args.num_epochs + 1):
         if args.inference_only: break # just to decrease identition
@@ -184,15 +192,20 @@ if __name__ == '__main__':
             for step in range(num_batch):
                 u, seq, time1, time2, pos, neg = sampler.next_batch() 
                 u, seq, time1, time2, pos, neg = np.array(u), np.array(seq), np.array(time1), np.array(time2), np.array(pos), np.array(neg)
-                pos_logits, neg_logits = model(seq, time1, time2, pos, neg)
+                batch_dist = distance_matrix(user_feat.T[u-1], user_feat.T[u-1])
+                pos_user = np.argpartition(batch_dist, args.reg_num)[:,:args.reg_num]
+                neg_user = np.argpartition(-batch_dist, args.reg_num)[:,:args.reg_num]
+                pos_logits, neg_logits, embed, pos_embed, neg_embed = model(u, seq, time1, time2, pos, neg, pos_user, neg_user)
                 pos_labels, neg_labels = torch.ones(pos_logits.shape, device=args.device), torch.zeros(neg_logits.shape, device=args.device)
                 adam_optimizer.zero_grad()
                 indices = np.where(pos != 0)
                 loss = bce_criterion(pos_logits[indices], pos_labels[indices])
                 loss += bce_criterion(neg_logits[indices], neg_labels[indices])
+                bceloss = loss.item()
+                loss += model.regloss(embed, pos_embed, neg_embed)
                 loss.backward()
                 adam_optimizer.step()
-                print("loss in epoch {} iteration {}: {}".format(epoch, step, loss.item())) 
+                print("loss in epoch {} iteration {}: bce {} reg {}".format(epoch, step, bceloss, loss.item()-bceloss)) 
 
         elif args.model == 'bprmf':
             # bce_criterion = torch.nn.BCEWithLogitsLoss()

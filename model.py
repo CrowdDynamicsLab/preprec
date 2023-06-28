@@ -220,6 +220,11 @@ class NewRec(torch.nn.Module):
         self.forward_layernorms = torch.nn.ModuleList()
         self.forward_layers = torch.nn.ModuleList()
 
+        if args.reg_loss:
+            # copied from final user embeddings
+            self.user_emb = torch.nn.Embedding(self.user_num + 1, args.hidden_units) 
+            self.triplet_loss = torch.nn.TripletMarginLoss(margin=0.0, p=2)
+
         self.last_layernorm = torch.nn.LayerNorm(args.hidden_units, eps=1e-8)
 
         for _ in range(args.num_blocks):
@@ -270,8 +275,10 @@ class NewRec(torch.nn.Module):
 
         return log_feats
 
-    def forward(self, log_seqs, time1_seqs, time2_seqs, pos_seqs, neg_seqs): # for training        
+    def forward(self, users, log_seqs, time1_seqs, time2_seqs, pos_seqs, neg_seqs, pos_user, neg_user): # for training        
         log_feats = self.log2feats(log_seqs, time1_seqs, time2_seqs)
+        pos_embed = log_feats[:, -1, :][pos_user]
+        neg_embed = log_feats[:, -1, :][neg_user]
 
         # obtain popularity-based embeddings for positive and negative item sequences
         pos_embs = self.embed_layer(self.popularity_enc(pos_seqs, time1_seqs, time2_seqs))
@@ -279,7 +286,7 @@ class NewRec(torch.nn.Module):
         pos_logits = (log_feats * pos_embs).sum(dim=-1)
         neg_logits = (log_feats * neg_embs).sum(dim=-1)
 
-        return pos_logits, neg_logits
+        return pos_logits, neg_logits, log_feats[:, -1, :], pos_embed, neg_embed
 
     def predict(self, log_seqs, time1_seqs, time2_seqs, item_indices): # for inference
         log_feats = self.log2feats(log_seqs, time1_seqs, time2_seqs) 
@@ -292,6 +299,10 @@ class NewRec(torch.nn.Module):
         logits = item_embs.matmul(final_feat.unsqueeze(-1)).squeeze(-1)
 
         return logits
+
+    def regloss(self, users, pos_users, neg_users):
+        users, pos_users, neg_users = users.to(self.dev), pos_users.to(self.dev), neg_users.to(self.dev)
+        return self.triplet_loss(torch.unsqueeze(users, 1), pos_users, neg_users)
 
 
 # taken from https://github.com/guoyang9/BPR-pytorch/tree/master
