@@ -200,6 +200,7 @@ if __name__ == '__main__':
                 u, seq, time1, time2, pos, neg = sampler.next_batch() 
                 u, seq, time1, time2, pos, neg = np.array(u), np.array(seq), np.array(time1), np.array(time2), np.array(pos), np.array(neg)
                 if args.triplet_loss or args.cos_loss:
+                    # find closest and furthest user pairs within sample for regularization
                     batch_dist = distance_matrix(user_feat.T[u-1], user_feat.T[u-1])
                     pos_user = np.argpartition(batch_dist, args.reg_num)[:,:args.reg_num]
                     neg_user = np.argpartition(-batch_dist, args.reg_num)[:,:args.reg_num]
@@ -229,13 +230,13 @@ if __name__ == '__main__':
                 seqs, labels, t1, t2 = np.array(seqs), torch.LongTensor(labels).to(args.device).view(-1), np.array(t1), np.array(t2)
                 logits = model(seqs, t1, t2)
                 adam_optimizer.zero_grad()
+                # labels are all shifted to last entry
                 loss = ce(logits[labels != 0], torch.full(labels[labels != 0].shape, logits.shape[1] - 1).to(args.device))
                 loss.backward()
                 adam_optimizer.step()
                 print("loss in epoch {} iteration {}: {}".format(epoch, step, loss.item()))
 
         elif args.model == 'bprmf':
-            # bce_criterion = torch.nn.BCEWithLogitsLoss()
             for step in range(num_batch):
                 u, pos, neg = sampler.next_batch() 
                 u, pos, neg = np.array(u), np.array(pos), np.array(neg)

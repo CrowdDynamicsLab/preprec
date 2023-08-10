@@ -373,7 +373,6 @@ class NewB4Rec(torch.nn.Module):
             seqs += self.pos_emb(torch.LongTensor(positions).to(self.dev))
         else:
             seqs = self.position_enc(seqs)
-        # mask = (log_seqs > 0).unsqueeze(1).repeat(1, log_seqs.size(1), 1).unsqueeze(1).to(self.dev)
         for i in range(len(self.attention_layers)):
             # seqs = torch.transpose(seqs, 0, 1)
             Q = self.attention_layernorms[i](seqs)
@@ -397,6 +396,7 @@ class NewB4Rec(torch.nn.Module):
             item_embs = self.embed_layer(self.popularity_enc(items_, t1_, t2_))
             return item_embs.squeeze(1).matmul(final_feat.squeeze(0).T)[:, -1]
             
+        # randomly choose group to rank and obtain loss from, all items is too large, appending actual labels to end of random ones
         items = np.append(np.random.choice(np.arange(1, self.item_num+1), size=(seqs.shape[0], seqs.shape[1], self.compare_size)), np.expand_dims(seqs, axis=-1), axis=2)
         t1 = np.tile(np.expand_dims(time1_seqs, -1), (1, 1, self.compare_size+1))
         t2 = np.tile(np.expand_dims(time2_seqs, -1), (1, 1, self.compare_size+1)) 
@@ -404,7 +404,6 @@ class NewB4Rec(torch.nn.Module):
         item_embs = self.embed_layer(self.popularity_enc(items_, t1_, t2_))
         item_embs = item_embs.reshape((item_embs.shape[0], seqs.shape[1], -1, item_embs.shape[-1]))
         logits = item_embs.matmul(final_feat.unsqueeze(-1)).squeeze(-1) 
-        # logits = logits + self.out_bias[items] #, causing out of memory issues for large batch size
         logits = self.logsoftmax(logits) 
         logits = logits.view(-1, logits.size(-1))  # (B*T) x V
 
@@ -412,10 +411,6 @@ class NewB4Rec(torch.nn.Module):
 
     def predict(self, seqs, time1_seqs, time2_seqs, candidates):
         scores = self.forward(seqs, time1_seqs, time2_seqs, candidates)  # T x V
-        # scores = scores[-1, :]  # V
-        # candidates = candidates.to(self.dev)
-        # scores = scores.gather(0, candidates)  # C
-
         return scores
 
 
