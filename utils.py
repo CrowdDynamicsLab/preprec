@@ -85,6 +85,54 @@ def sample_function_sasrec(user_train, usernum, itemnum, batch_size, maxlen, mas
         result_queue.put(zip(*one_batch))
 
 
+def sample_function_newb4rec(user_train, usernum, itemnum, batch_size, maxlen, mask_prob, result_queue, SEED):
+    def sample():
+
+        user = np.random.randint(1, usernum + 1)
+        while len(user_train[user]) <= 1: user = np.random.randint(1, usernum + 1)
+
+        tokens = []
+        t1 = []
+        t2 = []
+        labels = []
+        for s in user_train[user]:
+            prob = np.random.random()
+            if prob < mask_prob:
+                prob /= mask_prob
+                if prob < 0.8:
+                    tokens.append(0)
+                elif prob < 0.9:
+                    tokens.append(np.random.randint(1, itemnum + 1))
+                else:
+                    tokens.append(s[0])
+                labels.append(s[0])
+            else:
+                tokens.append(s[0])
+                labels.append(0)
+            t1.append(s[1])
+            t2.append(s[2])
+
+        tokens = tokens[-maxlen:]
+        labels = labels[-maxlen:]
+        t1 = t1[-maxlen:]
+        t2 = t2[-maxlen:]
+        mask_len = maxlen - len(tokens)
+        tokens = [0] * mask_len + tokens
+        labels = [0] * mask_len + labels
+        t1 = [0] * mask_len + t1
+        t2 = [0] * mask_len + t2
+
+        return tokens, labels, t1, t2
+
+    np.random.seed(SEED)
+    while True:
+        one_batch = []
+        for i in range(batch_size):
+            one_batch.append(sample())
+
+        result_queue.put(zip(*one_batch))
+
+
 def sample_function_bert4rec(user_train, usernum, itemnum, batch_size, maxlen, mask_prob, result_queue, SEED):
     def sample():
 
@@ -158,6 +206,8 @@ class WarpSampler(object):
             func = sample_function_newrec
         elif model == 'sasrec':
             func = sample_function_sasrec
+        elif model == 'newb4rec':
+            func = sample_function_newb4rec
         elif model == 'bert4rec':
             func = sample_function_bert4rec
         elif model == 'bprmf':
@@ -310,6 +360,8 @@ def data_partition3(fname):
 def evaluate(model, dataset, args):
     if args.model == 'newrec':
         predict = predict_newrec
+    elif args.model == 'newb4rec':
+        predict = predict_newb4rec
     elif args.model == 'mostpop':
         predict = predict_mostpop
     elif args.model == 'bprmf':
@@ -418,6 +470,48 @@ def predict_newrec(model, evaluate, train, valid, test, itemnum, args, _):
 
     predictions = -model.predict(*[np.array(l) for l in [[seq], [t1], [t2], item_idx]])
     predictions = torch.flatten(predictions)
+    rank = predictions.argsort().argsort()[0].item()
+    return rank
+
+
+def predict_newb4rec(model, evaluate, train, valid, test, itemnum, args, _):
+    seq = [x[0] for x in train]
+    t1 = [x[1] for x in train]
+    t2 = [x[2] for x in train]
+    if args.mode == 'test':
+        seq.append(valid[0][0])
+        t1.append(valid[0][1])
+        t2.append(valid[0][2])
+
+    seq = seq[-args.maxlen:]
+    t1 = t1[-args.maxlen:]
+    t2 = t2[-args.maxlen:]
+    padding_len = args.maxlen - len(seq)
+    seq = [0] * padding_len + seq
+    t1 = [0] * padding_len + t1
+    t2 = [0] * padding_len + t2
+
+    rated = set([x[0] for x in train])
+    rated.add(valid[0][0])
+    rated.add(test[0][0])
+
+    if args.eval_method == 1:
+        item_idx = [evaluate[0][0]]
+        for _ in range(100):
+            t = np.random.randint(1, itemnum + 1)
+            while t in rated: t = np.random.randint(1, itemnum + 1)
+            item_idx.append(t)
+            rated.add(t)
+
+    elif args.eval_method == 2:
+        pass
+    
+    elif args.eval_method == 3:
+        item_idx = list(set(range(1, itemnum+1)).difference(rated))
+        item_idx.insert(0, evaluate[0][0])
+
+    predictions = -model.predict(*[np.array(l) for l in [[seq], [t1], [t2], item_idx]])
+    predictions = torch.flatten(predictions) # - for 1st argsort DESC
     rank = predictions.argsort().argsort()[0].item()
     return rank
 
@@ -540,189 +634,9 @@ def predict_bert4rec(model, evaluate, train, valid, test, itemnum, args, _):
         item_idx = list(set(range(1, itemnum+1)).difference(rated))
         item_idx.insert(0, evaluate[0])
 
+    pdb.set_trace()
     predictions = -model.predict(*[torch.LongTensor([seq]), torch.LongTensor(item_idx)])
     predictions = torch.flatten(predictions) # - for 1st argsort DESC
 
     rank = predictions.argsort().argsort()[0].item()
     return rank
-
-'''
-def evaluate_mostpop(model, dataset, args):
-    metrics = [[0.0, 0.0] for _ in args.topk]
-
-    valid_user = 0.0
-
-    [train, valid, test, usernum, itemnum] = copy.deepcopy(dataset)
-    users = range(1, usernum + 1)
-    evaluate = test if args.mode == 'test' else valid
-    raw_pop = np.loadtxt(f'../data/{args.dataset}_{args.rawpop}.txt')
-
-    for u in users:
-        if len(train[u]) < 1 or len(evaluate[u]) < 1: continue
-
-
-        valid_user += 1
-
-        if args.eval_quality:
-            counts[locs[int(userpop[u]//scale)]] += 1
-
-        if args.eval_method != 3:
-            for i, k in enumerate(args.topk):
-                if rank < args.topk:
-                    if args.eval_quality:
-                        metrics[i][0][locs[int(userpop[u]//scale)]] += 1 / np.log2(rank+2)
-                        metrics[i][1][locs[int(userpop[u]//scale)]] += 1
-                    else:
-                        metrics[i][0] += 1 / np.log2(rank+2)
-                        metrics[i][1] += 1
-        else:
-            for i, k in enumerate(args.topk):
-                metrics[i][0] += 1/np.log2(rank+2)
-                metrics[i][1] += rank
-        if valid_user % 100 == 0:
-            print('.', end="")
-            sys.stdout.flush()
-
-    metrics = [[metrics[i][j]/valid_user for j in range(2)] for i in range(len(args.topk))]
-    print(metrics)
-    return metrics
-
-
-def evaluate_bprmf(model, dataset, args):
-    metrics = [[0.0, 0.0] for _ in args.topk]
-
-    valid_user = 0.0
-
-    [train, valid, test, usernum, itemnum] = copy.deepcopy(dataset)
-    users = range(1, usernum + 1)
-    evaluate = test if args.mode == 'test' else valid
-    for u in users:
-        if len(train[u]) < 1 or len(evaluate[u]) < 1: continue
-
-
-        valid_user += 1
-
-        if args.eval_quality:
-            counts[locs[int(userpop[u]//scale)]] += 1
-
-        if args.eval_method != 3:
-            for i, k in enumerate(args.topk):
-                if rank < args.topk:
-                    if args.eval_quality:
-                        metrics[i][0][locs[int(userpop[u]//scale)]] += 1 / np.log2(rank+2)
-                        metrics[i][1][locs[int(userpop[u]//scale)]] += 1
-                    else:
-                        metrics[i][0] += 1 / np.log2(rank+2)
-                        metrics[i][1] += 1
-        else:
-            for i, k in enumerate(args.topk):
-                metrics[i][0] += 1/np.log2(rank+2)
-                metrics[i][1] += rank
-        if valid_user % 100 == 0:
-            print('.', end="")
-            sys.stdout.flush()
-
-    metrics = [[metrics[i][j]/valid_user for j in range(2)] for i in range(len(args.topk))]
-    print(metrics)
-    return metrics
-
-
-def evaluate_sasrec(model, dataset, args):
-    if args.eval_quality:
-        userpop = np.loadtxt(f'../data/{args.dataset}_{args.userpop}.txt')
-        userpop[userpop >= 99.9] = 99.9
-        locs = dict(zip(np.unique(userpop), rankdata(np.unique(userpop))))
-        nums = len(np.unique(userpop))
-        scale = len(locs)/10
-        metrics = [([0.0 for _ in range(10)], [0.0 for _ in range(10)]) for _ in args.topk]
-        counts = [0 for _ in range(10)]
-    else:
-        metrics = [[0.0, 0.0] for _ in args.topk]
-    valid_user = 0.0
-
-    [train, valid, test, usernum, itemnum] = copy.deepcopy(dataset)
-    users = range(1, usernum + 1)
-    evaluate = test if args.mode == 'test' else valid
-    for u in users:
-        if len(train[u]) < 1 or len(evaluate[u]) < 1: continue
-
-        valid_user += 1
-
-        if args.eval_quality:
-            counts[locs[int(userpop[u]//scale)]] += 1
-
-        if args.eval_method != 3:
-            for i, k in enumerate(args.topk):
-                if rank < args.topk:
-                    if args.eval_quality:
-                        metrics[i][0][locs[int(userpop[u]//scale)]] += 1 / np.log2(rank+2)
-                        metrics[i][1][locs[int(userpop[u]//scale)]] += 1
-                    else:
-                        metrics[i][0] += 1 / np.log2(rank+2)
-                        metrics[i][1] += 1
-        else:
-            for i, k in enumerate(args.topk):
-                metrics[i][0] += 1/np.log2(rank+2)
-                metrics[i][1] += rank
-        if valid_user % 100 == 0:
-            print('.', end="")
-            sys.stdout.flush()
-
-    if args.eval_quality:
-        metrics = [[[metrics[i][j][k]/counts[k] for k in range(10) if counts[k] != 0] for j in range(2)] for i in range(len(args.topk))]
-    else:
-        metrics = [[metrics[i][j]/valid_user for j in range(2)] for i in range(len(args.topk))]
-    print(metrics)
-    return metrics
-
-
-def evaluate_bert4rec(model, dataset, args):
-    if args.eval_quality:
-        userpop = np.loadtxt(f'../data/{args.dataset}_{args.userpop}.txt')
-        userpop[userpop >= 99.9] = 99.9
-        locs = dict(zip(np.unique(userpop), rankdata(np.unique(userpop))))
-        nums = len(np.unique(userpop))
-        scale = len(locs)/10
-        metrics = [([0.0 for _ in range(10)], [0.0 for _ in range(10)]) for _ in args.topk]
-        counts = [0 for _ in range(10)]
-    else:
-        metrics = [[0.0, 0.0] for _ in args.topk]
-
-    valid_user = 0.0
-
-    [train, valid, test, usernum, itemnum] = copy.deepcopy(dataset)
-    users = range(1, usernum + 1)
-    evaluate = test if args.mode == 'test' else valid
-    for u in users:
-        if len(train[u]) < 1 or len(evaluate[u]) < 1: continue
-
-
-        valid_user += 1
-
-        if args.eval_quality:
-            counts[locs[int(userpop[u]//scale)]] += 1
-
-        if args.eval_method != 3:
-            for i, k in enumerate(args.topk):
-                if rank < args.topk:
-                    if args.eval_quality:
-                        metrics[i][0][locs[int(userpop[u]//scale)]] += 1 / np.log2(rank+2)
-                        metrics[i][1][locs[int(userpop[u]//scale)]] += 1
-                    else:
-                        metrics[i][0] += 1 / np.log2(rank+2)
-                        metrics[i][1] += 1
-        else:
-            for i, k in enumerate(args.topk):
-                metrics[i][0] += 1/np.log2(rank+2)
-                metrics[i][1] += rank
-        if valid_user % 100 == 0:
-            print('.', end="")
-            sys.stdout.flush()
-
-    if args.eval_quality:
-        metrics = [[[metrics[i][j][k]/counts[k] for k in range(10) if counts[k] != 0] for j in range(2)] for i in range(len(args.topk))]
-    else:
-        metrics = [[metrics[i][j]/valid_user for j in range(2)] for i in range(len(args.topk))]
-    print(metrics)
-    return metrics
-    '''
