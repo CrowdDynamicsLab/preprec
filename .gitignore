@@ -4,4 +4,5 @@ __pycache__/
 run*
 res/
 runs/
-data/.ipynb_checkpoints/
+data/*
+!data/data.ipynb

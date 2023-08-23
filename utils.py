@@ -634,7 +634,6 @@ def predict_bert4rec(model, evaluate, train, valid, test, itemnum, args, _):
         item_idx = list(set(range(1, itemnum+1)).difference(rated))
         item_idx.insert(0, evaluate[0])
 
-    pdb.set_trace()
     predictions = -model.predict(*[torch.LongTensor([seq]), torch.LongTensor(item_idx)])
     predictions = torch.flatten(predictions) # - for 1st argsort DESC
 
