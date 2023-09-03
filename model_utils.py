@@ -56,6 +56,19 @@ class InitFeedForward(torch.nn.Module):
         return outputs
 
 
+class Gate(torch.nn.Module):
+    def __init__(self, hidden=50, dropout_rate=0):
+        super(Gate, self).__init__()
+
+        self.fc1 = torch.nn.Linear(hidden, hidden)
+        self.fc2 = torch.nn.Linear(hidden, hidden)
+        self.sigm = torch.nn.Sigmoid()
+
+    def forward(self, input1, input2):
+        gated = self.sigm(self.fc1(input1) + self.fc2(input2))
+        return input1 * gated + input2 * (1 - gated)
+
+
 # adapted from https://github.com/pmixer/TiSASRec.pytorch/blob/master/model.py
 class CausalMultiHeadAttention(torch.nn.Module):
     def __init__(self, hidden_size, head_num, dropout_rate, dev):

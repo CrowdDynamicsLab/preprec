@@ -15,12 +15,13 @@ class NewRec(torch.nn.Module):
         self.dev = args.device
         self.model = args.model
         self.no_fixed_emb = args.no_fixed_emb
-        self.hid_mult = 1
+        self.num_heads = 1
 
         self.itemgrp = args.itemgrp
         if self.itemgrp:
+            self.comb = args.comb
             self.grp_feat = np.loadtxt(f"../data/{args.dataset}_{args.itemgrp_file}.txt")
-            self.hid_mult += 1
+            self.num_heads += 1
 
         self.traj_form = args.traj_form
         if self.traj_form != '':
@@ -35,13 +36,16 @@ class NewRec(torch.nn.Module):
                     self.traj_dim, args.hidden_units * 2, args.hidden_units
                 )
             elif self.traj_form == 'attention':
+                self.comb = args.comb
                 self.traj_perc = args.traj_perc
                 self.user_enc = UserActivityEncoding(
                     args.hidden_units, self.traj_perc, args.traj_enc_type
                 )
-                self.hid_mult += 1
+                self.num_heads += 1
 
-        self.hidden_units = args.hidden_units * self.hid_mult
+        self.hidden_units = args.hidden_units * self.num_heads
+        if self.num_heads == 2:
+            self.gate = Gate(args.hidden_units)
 
         self.popularity_enc = PopularityEncoding(args)
         self.embed_layer = InitFeedForward(
@@ -73,7 +77,7 @@ class NewRec(torch.nn.Module):
             self.attention_layernorms.append(new_attn_layernorm)
 
             new_attn_layer = CausalMultiHeadAttention(
-                self.hidden_units, args.num_heads, args.dropout_rate, self.dev
+                self.hidden_units, self.num_heads, args.dropout_rate, self.dev
             )
             self.attention_layers.append(new_attn_layer)
 
@@ -118,10 +122,13 @@ class NewRec(torch.nn.Module):
             seqs = torch.cat((seqs, grp_seqs), dim=-1)
 
         if self.traj_form == 'attention':
-            user_percs = self.user_traj.T[
-                np.repeat(np.expand_dims(users - 1, -1), time1_seqs.shape[1], -1),
-                time1_seqs + self.traj_dim
-            ]
+            try:
+                user_percs = self.user_traj.T[
+                    np.repeat(np.expand_dims(users - 1, -1), time1_seqs.shape[1], -1),
+                    time1_seqs.astype(int) + self.traj_dim
+                ]
+            except:
+                pdb.set_trace()
             user_percs = np.minimum(99, user_percs*self.traj_perc/100).astype(int)
             user_seqs = self.user_enc(user_percs).squeeze(0).to(self.dev)
             seqs = torch.cat((seqs, user_seqs), dim=-1)
@@ -145,6 +152,9 @@ class NewRec(torch.nn.Module):
             seqs *= ~timeline_mask.unsqueeze(-1)
 
         log_feats = self.last_layernorm(seqs)  # (U, T, C) -> (U, -1, C)
+        if self.num_heads == 2:
+            # pdb.set_trace()
+            log_feats = self.gate(log_feats[:, :, :self.hidden_units//self.num_heads], log_feats[:, :, self.hidden_units//self.num_heads:])
 
         return log_feats
 
@@ -170,9 +180,9 @@ class NewRec(torch.nn.Module):
         pos_user,
         neg_user,
     ):  # for training
-        log_feats = self.log2feats(users, log_seqs, time1_seqs, time2_seqs)
+        log_feats = self.log2feats(users, log_seqs, time1_seqs[:,:-1], time2_seqs[:,:-1])
         if self.traj_form == 'mlp':
-            user_feats = self.user2feats(users, time1_seqs)
+            user_feats = self.user2feats(users, time1_seqs[:,:-1])
             full_feats = 0.5 * log_feats + 0.5 * user_feats
         else:
             full_feats = log_feats
@@ -180,34 +190,41 @@ class NewRec(torch.nn.Module):
         neg_embed = log_feats[:, -1, :][neg_user]
 
         # obtain popularity-based embeddings for positive and negative item sequences
+        if args.prev_time:
+            mod_time2 = time2_seqs[:,:-1]
+        else:
+            mod_time2 = np.where(time2_seqs[:,1:] == 0, time2_seqs[:,1:], time2_seqs[:,1:]-1)
         pos_embs = self.embed_layer(
-            self.popularity_enc(pos_seqs, time1_seqs, time2_seqs)
+            self.popularity_enc(pos_seqs, time1_seqs[:,1:], mod_time2)
         )
         neg_embs = self.embed_layer(
-            self.popularity_enc(neg_seqs, time1_seqs, time2_seqs)
+            self.popularity_enc(neg_seqs, time1_seqs[:,1:], mod_time2)
         )
 
         if self.itemgrp:
-            grp_pos = torch.Tensor(self.grp_feat[pos_seqs, :]).to(self.dev)
-            pos_embs = torch.cat((pos_embs, grp_pos), dim=-1)
-            grp_neg = torch.Tensor(self.grp_feat[neg_seqs, :]).to(self.dev)
-            neg_embs = torch.cat((neg_embs, grp_neg), dim=-1)
+            if self.comb:
+                grp_pos = torch.Tensor(self.grp_feat[pos_seqs, :]).to(self.dev)
+                pos_embs = self.gate(pos_embs, grp_pos)
+                grp_neg = torch.Tensor(self.grp_feat[neg_seqs, :]).to(self.dev)
+                neg_embs = self.gate(neg_embs, grp_neg)
         if self.traj_form == 'attention':
-            pdb.set_trace()
-            pos_percs = self.user_traj.T[
-                np.repeat(np.expand_dims(pos_user - 1, -1), time1_seqs.shape[1], -1),
-                time1_seqs + self.traj_dim
-            ]
-            pos_percs = np.minimum(99, pos_percs*self.traj_perc/100).astype(int)
-            pos_percs = self.user_enc(pos_percs).squeeze(0).to(self.dev)
-            pos_embs = torch.cat((pos_embs, pos_percs), dim=-1)
-            neg_percs = self.user_traj.T[
-                np.repeat(np.expand_dims(neg_user - 1, -1), time1_seqs.shape[1], -1),
-                time1_seqs + self.traj_dim
-            ]
-            neg_percs = np.minimum(99, neg_percs*self.traj_perc/100).astype(int)
-            neg_percs = self.user_enc(neg_percs).squeeze(0).to(self.dev)
-            neg_embs = torch.cat((neg_embs, neg_percs), dim=-1)
+            if self.comb:
+                pos_percs = self.user_traj.T[
+                    np.repeat(np.expand_dims(users - 1, -1), time1_seqs.shape[1], -1),
+                    time1_seqs + self.traj_dim
+                ]
+                pos_percs = np.minimum(99, pos_percs*self.traj_perc/100).astype(int)
+                pos_percs = self.user_enc(pos_percs).squeeze(0).to(self.dev)
+                pos_embs = self.gate(pos_embs, pos_percs)
+                neg_percs = self.user_traj.T[
+                    np.repeat(np.expand_dims(users - 1, -1), time1_seqs.shape[1], -1),
+                    time1_seqs + self.traj_dim
+                ]
+                neg_percs = np.minimum(99, neg_percs*self.traj_perc/100).astype(int)
+                neg_percs = self.user_enc(neg_percs).squeeze(0).to(self.dev)
+                neg_embs = self.gate(neg_embs, neg_percs)
+            else:
+                pass
 
         pos_logits = (full_feats * pos_embs).sum(dim=-1)
         neg_logits = (full_feats * neg_embs).sum(dim=-1)
@@ -215,7 +232,7 @@ class NewRec(torch.nn.Module):
         return pos_logits, neg_logits, full_feats[:, -1, :], pos_embed, neg_embed
 
     def predict(
-        self, log_seqs, time1_seqs, time2_seqs, item_indices, user
+        self, log_seqs, time1_seqs, time2_seqs, item_indices, time1_pred, time2_pred, user
     ):  # for inference
         log_feats = self.log2feats(user, log_seqs, time1_seqs, time2_seqs)
         if self.traj_form == 'mlp':
@@ -226,24 +243,24 @@ class NewRec(torch.nn.Module):
         final_feat = full_feats[:, -1, :]
 
         # use most recent interaction time to obtain popularity embedding
-        time1_pred = np.tile(time1_seqs[0][-1], item_indices.shape)
-        time2_pred = np.tile(time2_seqs[0][-1], item_indices.shape)
+        # time1_pred = np.tile(time1_seqs[0][-1], item_indices.shape)
+        # time2_pred = np.tile(time2_seqs[0][-1], item_indices.shape)
         item_embs = self.embed_layer(
             self.popularity_enc(
-                np.expand_dims(item_indices, axis=1), time1_pred, time2_pred
+                item_indices, time1_pred, time2_pred - 1
             )
         )
-        if self.itemgrp:
-            grp_item = torch.Tensor(self.grp_feat[item_indices, :]).to(self.dev)
-            item_embs = torch.cat((item_embs, grp_item), dim=-1)
-        if self.traj_form == 'attention':
+        if self.itemgrp and self.comb:
+            #TODO: this
+            pass
+        if self.traj_form == 'attention' and self.comb:
             user_percs = self.user_traj.T[
-                np.repeat(np.expand_dims(user - 1, -1), time1_seqs.shape[1], -1),
-                time1_seqs + self.traj_dim
+                np.repeat(np.expand_dims(user - 1, -1), item_embs.shape[1], -1),
+                time1_pred + self.traj_dim
             ]
             user_percs = np.minimum(99, user_percs*self.traj_perc/100).astype(int)
             user_percs = self.user_enc(user_percs).squeeze(0).to(self.dev)
-            item_embs = torch.cat((item_embs, user_percs), dim=-1)
+            item_embs = self.gate(item_embs, user_percs)
 
         logits = item_embs.matmul(final_feat.unsqueeze(-1)).squeeze(-1)
 

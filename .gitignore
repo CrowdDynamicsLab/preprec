@@ -3,6 +3,7 @@ __pycache__/
 *_default/
 run*
 res/
+res2/
 runs/
 data/*
 !data/data.ipynb

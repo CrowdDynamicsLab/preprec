@@ -10,7 +10,7 @@ from model import SASRec, NewRec, NewB4Rec, BERT4Rec, BPRMF
 from utils import *
 
 
-def train_test(args, sampler, num_batch, model, dataset, epoch_start_idx, write):
+def train_test(args, sampler, num_batch, model, dataset, epoch_start_idx, write, usernegs):
     f = open(os.path.join(write, "log.txt"), "w")
     adam_optimizer = torch.optim.Adam(
         model.parameters(), lr=args.lr, betas=(0.9, 0.98), weight_decay=args.wd
@@ -24,6 +24,7 @@ def train_test(args, sampler, num_batch, model, dataset, epoch_start_idx, write)
 
     best_ndcg = 0
     best_state = model.state_dict()
+    stop_early = 0
     for epoch in range(epoch_start_idx, args.num_epochs + 1):
         if args.inference_only:
             break  # just to decrease identition
@@ -81,6 +82,7 @@ def train_test(args, sampler, num_batch, model, dataset, epoch_start_idx, write)
                     np.array(pos),
                     np.array(neg),
                 )
+                # pdb.set_trace()
                 if args.triplet_loss or args.cos_loss:
                     # find closest and furthest user pairs within sample for regularization
                     batch_dist = distance_matrix(user_feat.T[u - 1], user_feat.T[u - 1])
@@ -164,8 +166,9 @@ def train_test(args, sampler, num_batch, model, dataset, epoch_start_idx, write)
             model.eval()
             t1 = time.time() - t0
             T += t1
+            print(T)
             # print("Evaluating", end="")
-            t_valid = evaluate(model, dataset, args, "valid")
+            t_valid = evaluate(model, dataset, args, "valid", usernegs)
             # print(
                 # f"epoch:{epoch}, time: {T} (NDCG@{args.topk[0]}: {t_valid[0][0]}, HR@{args.topk[0]}: {t_valid[0][1]})"
             # )
@@ -180,6 +183,12 @@ def train_test(args, sampler, num_batch, model, dataset, epoch_start_idx, write)
             if t_valid[0][0] > best_ndcg:
                 best_ndcg = t_valid[0][0]
                 best_state = model.state_dict()
+                stop_early = 0
+            else:
+                stop_early += 1
+
+        if stop_early == 5:
+            break
     
     if best_ndcg != 0:
         fname = "best.pth"
@@ -191,7 +200,7 @@ def train_test(args, sampler, num_batch, model, dataset, epoch_start_idx, write)
             model_dict.update(best_state)
             model.load_state_dict(model_dict)
         model.eval()
-        t_test = evaluate(model, dataset, args, "test")
+        t_test = evaluate(model, dataset, args, "test", usernegs)
         for i, k in enumerate(args.topk):
             #print(f"NDCG@{k}: {t_test[i][0]}, HR@{k}: {t_test[i][1]}")
             f.write(f"NDCG@{k}: {t_test[i][0]}, HR@{k}: {t_test[i][1]} \n")

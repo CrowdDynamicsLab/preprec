@@ -11,8 +11,8 @@ def parse():
     parser.add_argument('--maxlen', default=200, type=int)
     parser.add_argument('--hidden_units', default=50, type=int)
     parser.add_argument('--num_blocks', default=2, type=int)
-    parser.add_argument('--num_epochs', default=201, type=int)
-    parser.add_argument('--epoch_test', default=40, type=int)
+    parser.add_argument('--num_epochs', default=80, type=int)
+    parser.add_argument('--epoch_test', default=4, type=int)
     parser.add_argument('--num_heads', default=1, type=int)
     parser.add_argument('--dropout_rate', default=0.2, type=float)
     parser.add_argument('--l2_emb', default=0.0, type=float, help = 'weight of l2 loss of embedding')
@@ -21,6 +21,8 @@ def parse():
     parser.add_argument('--inference_only',  action='store_true')
     parser.add_argument('--save_neg',  action='store_true')
     parser.add_argument('--mode', default='test', type=str, help='valid | test')
+    parser.add_argument('--prev_time',  action='store_true')
+    parser.add_argument('--no_valid_in_test',  action='store_true')
     parser.add_argument('--state_dict_path', default=None, type=str)
     parser.add_argument('--model', default='newrec', type=str, help='newrec | mostpop | sasrec | bert4rec | bprmf')
     parser.add_argument('--monthpop', default='wtembed', type=str, help='format of month popularity: wtembed (time-weighted) | currembed (current month) | cumembed (cumulative)')
@@ -59,6 +61,8 @@ def parse():
     parser.add_argument('--traj_dim', default=100, help='original size of trajectory')
     parser.add_argument('--traj_perc', default=100, help='scale from 1 to traj_perc to use for user percentile encoding')
     parser.add_argument('--traj_enc_type', default='sin', help='type of encoding to use for trajectory if traj_form = attention, sin (sinusoidal) | lin (linear bin)')
+    parser.add_argument('--comb', action='store_true', help='combine user info for ground truth embedding comparison')
+    parser.add_argument('--checking_after_t2', action='store_true', help='checking after t2')
 
     args = parser.parse_args()
     return args

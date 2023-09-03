@@ -10,6 +10,7 @@ from model import SASRec, NewRec, NewB4Rec, BERT4Rec, BPRMF
 from utils import *
 from data import *
 from train_test import train_test
+import pickle
 
 
 def str2bool(s):
@@ -57,11 +58,12 @@ if __name__ == "__main__":
             dataset = data_partition(
                 args.dataset,
                 args.maxlen,
+                args.augment,
                 None if args.augfulllen == 0 else args.augfulllen,
             )
             [user_train, user_valid, user_test, usernum, itemnum, user_dict] = dataset
         else:
-            dataset = data_partition(args.dataset)
+            dataset = data_partition(args.dataset, args.maxlen)
             [user_train, user_valid, user_test, usernum, itemnum] = dataset
     elif args.model in unordered:
         dataset = data_partition3(args.dataset)
@@ -70,13 +72,19 @@ if __name__ == "__main__":
     if args.save_neg:
         setup_negatives(dataset, args.dataset)
         sys.exit()
+    with open(f"../data/{args.dataset}_userneg.pickle", 'rb') as handle:
+        usernegs = pickle.load(handle)
+
     print("done loading data!")
 
-    num_batch = len(user_train) // args.batch_size
+    if args.model == "newrec":
+        num_batch = len(user_train[0]) // args.batch_size
+    else:
+        num_batch = len(user_train) // args.batch_size
 
     # no training needed for most popular rec
     if args.model == "mostpop":
-        t_test = evaluate(None, dataset, args, "test")
+        t_test = evaluate(None, dataset, args, "test", usernegs)
         for i, k in enumerate(args.topk):
             print(f"{args.mode} (NDCG@{k}: {t_test[i][0]}, HR@{k}: {t_test[i][1]})")
         sys.exit()
@@ -146,10 +154,9 @@ if __name__ == "__main__":
                     ),
                     strict=False,
                 )
-                tail = args.state_dict_path[args.state_dict_path.find("epoch=") + 6 :]
-                epoch_start_idx = int(tail[: tail.find(".")]) + 1
             print("done loading model")
         except:
             raise ValueError("loading state dict failed")
 
-    train_test(args, sampler, num_batch, model, dataset, epoch_start_idx, write)
+    print("starting training/testing")
+    train_test(args, sampler, num_batch, model, dataset, epoch_start_idx, write, usernegs)
