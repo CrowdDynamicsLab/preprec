@@ -249,6 +249,7 @@ class PopularityEncoding(torch.nn.Module):
         self.input2 = args.input_units2
         self.base_dim1 = args.base_dim1
         self.base_dim2 = args.base_dim2
+        self.pause = hasattr(args, 'pause') and args.pause
         # table of fixed feature vectors for items by time, shape: (num_times*base_dim, num_items)
         month_pop = np.loadtxt(f"../data/{args.dataset}_{args.monthpop}.txt")
         week_pop = np.loadtxt(f"../data/{args.dataset}_{args.weekpop}.txt")

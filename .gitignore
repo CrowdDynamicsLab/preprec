@@ -2,8 +2,7 @@
 __pycache__/
 *_default/
 run*
-res/
-res2/
+res*
 runs/
 data/*
 !data/data.ipynb

@@ -302,7 +302,7 @@ def setup_negatives(dataset, dataname):
 
 def evaluate(model, dataset, args, mode, usernegs):
     if args.model == "newrec":
-        predict = predict_newrec
+        predict = newpredict_newrec
     elif args.model == "newb4rec":
         predict = predict_newb4rec
     elif args.model == "mostpop":
@@ -310,9 +310,9 @@ def evaluate(model, dataset, args, mode, usernegs):
     elif args.model == "bprmf":
         predict = predict_bprmf
     elif args.model == "sasrec":
-        predict = predict_sasrec
+        predict = newpredict_sasrec
     elif args.model == "bert4rec":
-        predict = predict_bert4rec
+        predict = newpredict_bert4rec
 
     if args.eval_quality:
         userpop = np.loadtxt(f"../data/{args.dataset}_{args.userpop}.txt")
@@ -336,23 +336,15 @@ def evaluate(model, dataset, args, mode, usernegs):
     users = range(1, usernum + 1)
     evaluate = test if mode == "test" else valid
 
-
-    # seqs = np.array(list(itemgetter(*users)(train[0])))
-    # t1s = np.array(list(itemgetter(*users)(train[1])))
-    # t2s = np.array(list(itemgetter(*users)(train[2])))
-    # seqs_valid = np.array(list(itemgetter(*users)(valid[0])))
-    # t1s_valid = np.array(list(itemgetter(*users)(valid[1])))
-    # t2s_valid = np.array(list(itemgetter(*users)(valid[2])))
-
-    # newpredict_newrec(model, evaluate, train, valid, test, itemnum, args, mode, usernegs, users)
-
     if args.model == "mostpop":
         misc = np.loadtxt(f"../data/{args.dataset}_{args.rawpop}.txt")
     else:
         misc = None
 
-    if args.model == "newrec":
-        ranks, predusers = newpredict_newrec(model, evaluate, train, valid, test, itemnum, args, mode, usernegs, users)
+    pause = hasattr(args, 'pause') and args.pause
+
+    if args.model in ["newrec", "bert4rec", "sasrec"]:
+        ranks, predusers = predict(model, evaluate, train, valid, test, itemnum, args, mode, usernegs, users)
         valid_user = len(ranks)
 
         if args.eval_quality:
@@ -380,13 +372,16 @@ def evaluate(model, dataset, args, mode, usernegs):
 
     else:
         for u in users:
-            if len(train[u]) < 1 or len(evaluate[u]) < 1:
-                continue
-            if args.model == "bprmf":
-                misc = u
-            rank = predict(
-                model, evaluate[u], train[u], valid[u], test[u], itemnum, args, mode, usernegs[u], misc
-            )
+            if args.model == "mostpop":
+                rank = predict(
+                    model, [evaluate[0][u], evaluate[1][u], evaluate[2][u]], [train[0][u], train[1][u], train[2][u]], [valid[0][u], valid[1][u], valid[2][u]], [test[0][u], test[1][u], test[2][u]], itemnum, args, mode, usernegs[u], misc
+                )
+            else:
+                if args.model == "bprmf":
+                    misc = u
+                rank = predict(
+                    model, evaluate[u], train[u], valid[u], test[u], itemnum, args, mode, usernegs[u], misc
+                )
             valid_user += 1
 
             if args.eval_quality:
@@ -445,7 +440,7 @@ def newpredict_newrec(model, evaluate, train, valid, test, itemnum, args, mode, 
     t1s_test = np.array(list(itemgetter(*users)(test[1])))
     t2s_test = np.array(list(itemgetter(*users)(test[2])))
     if mode == "test":
-        if args.no_valid_in_test:
+        if not args.no_valid_in_test:
             seqs = np.concatenate((seqs, np.expand_dims(seqs_valid, -1)), axis=1)
             t1s = np.concatenate((t1s, np.expand_dims(t1s_valid, -1)), axis=1)
             t2s = np.concatenate((t2s, np.expand_dims(t2s_valid, -1)), axis=1)
@@ -466,8 +461,12 @@ def newpredict_newrec(model, evaluate, train, valid, test, itemnum, args, mode, 
     cond = item_idxs != 0
     seqs, t1s, t2s, item_idxs, item_t1s, item_t2s, users = seqs[cond], t1s[cond], t2s[cond], item_idxs[cond], item_t1s[cond], item_t2s[cond], np.array(users)[cond]
     item_idxs = np.concatenate((np.expand_dims(item_idxs, -1), negs), axis=1)
-    item_t1s = np.repeat(np.expand_dims(item_t1s, -1), item_idxs.shape[1], axis=1)
-    item_t2s = np.repeat(np.expand_dims(item_t2s, -1), item_idxs.shape[1], axis=1)
+    if args.prev_time:
+        item_t1s = np.repeat(np.expand_dims(t1s[:,-1], -1), item_idxs.shape[1], axis=1)
+        item_t2s = np.repeat(np.expand_dims(t2s[:,-1], -1), item_idxs.shape[1], axis=1)
+    else:
+        item_t1s = np.repeat(np.expand_dims(item_t1s, -1), item_idxs.shape[1], axis=1)
+        item_t2s = np.repeat(np.expand_dims(item_t2s, -1), item_idxs.shape[1], axis=1) - 1
     fullranks = np.zeros(seqs.shape[0])
     for i in range(seqs.shape[0]//1000+1):
         inds = np.arange(1000*i, min(1000*(i+1), seqs.shape[0]))
@@ -562,28 +561,23 @@ def predict_newb4rec(model, evaluate, train, valid, test, itemnum, args, mode, n
 
 def predict_mostpop(model, evaluate, train, valid, test, itemnum, args, mode, negs, rawpop):
     if mode == "test":
-        t1 = valid[-1][1]
+        t1 = test[1] - 1
     else:
-        t1 = train[-1][1]
+        t1 = valid[1] - 1
 
     if args.eval_method == 1:
-        item_idx = [evaluate[0][0]]
+        item_idx = [evaluate[0]]
         item_idx.extend(negs)
-        # for _ in range(100):
-            # t = np.random.randint(1, itemnum + 1)
-            # while t in rated:
-                # t = np.random.randint(1, itemnum + 1)
-            # item_idx.append(t)
-            # rated.add(t)
 
     elif args.eval_method == 2:
         pass
 
     elif args.eval_method == 3:
         item_idx = list(set(range(1, itemnum + 1)).difference(rated))
-        item_idx.insert(0, evaluate[0][0])
+        item_idx.insert(0, evaluate[0])
 
-    predictions = -rawpop[t1, item_idx]
+    # pdb.set_trace()
+    predictions = -rawpop[t1, np.array(item_idx)-1]
     rank = predictions.argsort().argsort()[0].item()
     return rank
 
@@ -592,12 +586,6 @@ def predict_bprmf(model, evaluate, train, valid, test, itemnum, args, mode, negs
     if args.eval_method == 1:
         item_idx = [evaluate[0]]
         item_idx.extend(negs)
-        # for _ in range(100):
-            # t = np.random.randint(1, itemnum + 1)
-            # while t in rated:
-                # t = np.random.randint(1, itemnum + 1)
-            # item_idx.append(t)
-            # rated.add(t)
 
     elif args.eval_method == 2:
         pass
@@ -624,13 +612,6 @@ def predict_sasrec(model, evaluate, train, valid, test, itemnum, args, mode, neg
     if args.eval_method == 1:
         item_idx = [evaluate[0]]
         item_idx.extend(negs)
-        # for _ in range(100):
-            # t = np.random.randint(1, itemnum + 1)
-            # while t in rated:
-                # t = np.random.randint(1, itemnum + 1)
-            # item_idx.append(t)
-            # rated.add(t)
-
     elif args.eval_method == 2:
         pass
 
@@ -657,12 +638,6 @@ def predict_bert4rec(model, evaluate, train, valid, test, itemnum, args, mode, n
     if args.eval_method == 1:
         item_idx = [evaluate[0]]
         item_idx.extend(negs)
-        # for _ in range(100):
-            # t = np.random.randint(1, itemnum + 1)
-            # while t in rated:
-                # t = np.random.randint(1, itemnum + 1)
-            # item_idx.append(t)
-            # rated.add(t)
 
     elif args.eval_method == 2:
         pass
@@ -676,3 +651,67 @@ def predict_bert4rec(model, evaluate, train, valid, test, itemnum, args, mode, n
 
     rank = predictions.argsort().argsort()[0].item()
     return rank
+
+
+def newpredict_sasrec(model, evaluate, train, valid, test, itemnum, args, mode, usernegs, users):
+    listseqs = list(itemgetter(*users)(train))
+    length = max(map(len, listseqs))
+    seqs = np.array([[0]*(length-len(xi))+xi for xi in listseqs])
+    seqs_valid = np.array(list(itemgetter(*users)(valid)))
+    seqs_test = np.array(list(itemgetter(*users)(test)))
+
+    if mode == "test":
+        if not args.no_valid_in_test:
+            seqs = np.concatenate((seqs, seqs_valid), axis=1)
+        item_idxs = seqs_test
+    else:
+        item_idxs = seqs_valid
+    seqs = seqs[:, -args.maxlen:]
+
+    negs = np.array(list(itemgetter(*usernegs.keys())(usernegs)))
+    cond = np.isin(users, list(usernegs.keys())) # (item_idxs != 0) & ()
+    seqs, item_idxs, users = seqs[cond], item_idxs[cond], np.array(users)[cond]
+    cond = np.squeeze(item_idxs, 1) != 0
+    seqs, item_idxs, users = seqs[cond], item_idxs[cond], np.array(users)[cond]
+    item_idxs = np.concatenate((item_idxs, negs), axis=1)
+
+    fullranks = np.zeros(seqs.shape[0])
+    for i in range(seqs.shape[0]//1000+1):
+        inds = np.arange(1000*i, min(1000*(i+1), seqs.shape[0]))
+        # pdb.set_trace()
+        predictions = -model.predict(*[np.array(seqs[inds]), np.array(item_idxs[inds])])
+        fullranks[inds] = predictions.argsort(axis=1).argsort(axis=1)[:, 0].to('cpu')
+    return fullranks, np.array(list(usernegs.keys()))[cond]
+
+
+def newpredict_bert4rec(model, evaluate, train, valid, test, itemnum, args, mode, usernegs, users):
+    listseqs = list(itemgetter(*users)(train))
+    length = max(map(len, listseqs))
+    seqs = np.array([[0]*(length-len(xi))+xi for xi in listseqs])
+    seqs_valid = np.array(list(itemgetter(*users)(valid)))
+    seqs_test = np.array(list(itemgetter(*users)(test)))
+
+    if mode == "test":
+        if not args.no_valid_in_test:
+            seqs = np.concatenate((seqs, seqs_valid), axis=1)
+        item_idxs = seqs_test
+    else:
+        item_idxs = seqs_valid
+    seqs = seqs[:, -args.maxlen:]
+
+    negs = np.array(list(itemgetter(*usernegs.keys())(usernegs)))
+    cond = np.isin(users, list(usernegs.keys())) # (item_idxs != 0) & ()
+    seqs, item_idxs, users = seqs[cond], item_idxs[cond], np.array(users)[cond]
+    cond = np.squeeze(item_idxs, 1) != 0
+    seqs, item_idxs, users = seqs[cond], item_idxs[cond], np.array(users)[cond]
+    item_idxs = np.concatenate((item_idxs, negs), axis=1)
+
+    fullranks = np.zeros(seqs.shape[0])
+    for i in range(seqs.shape[0]//100+1):
+        inds = np.arange(100*i, min(100*(i+1), seqs.shape[0]))
+        # pdb.set_trace()
+        predictions = -model.predict(
+            *[torch.LongTensor(seqs[inds]), torch.LongTensor(item_idxs[inds])]
+        )
+        fullranks[inds] = predictions.argsort(axis=1).argsort(axis=1)[:, 0].to('cpu')
+    return fullranks, np.array(list(usernegs.keys()))[cond]

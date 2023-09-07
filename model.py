@@ -5,7 +5,7 @@ from model_utils import *
 
 
 class NewRec(torch.nn.Module):
-    def __init__(self, user_num, item_num, args):
+    def __init__(self, user_num, item_num, args, second=False):
         super(NewRec, self).__init__()
         assert args.input_units1 % args.base_dim1 == 0
         assert args.input_units2 % args.base_dim2 == 0
@@ -16,18 +16,22 @@ class NewRec(torch.nn.Module):
         self.model = args.model
         self.no_fixed_emb = args.no_fixed_emb
         self.num_heads = 1
+        dataset = args.dataset if not second else args.dataset2
+        self.prev_time = args.prev_time
+        self.lag = args.lag
+        self.pause = hasattr(args, 'pause') and args.pause
 
         self.itemgrp = args.itemgrp
         if self.itemgrp:
             self.comb = args.comb
-            self.grp_feat = np.loadtxt(f"../data/{args.dataset}_{args.itemgrp_file}.txt")
+            self.grp_feat = np.loadtxt(f"../data/{dataset}_{args.itemgrp_file}.txt")
             self.num_heads += 1
 
         self.traj_form = args.traj_form
         if self.traj_form != '':
             self.traj_dim = args.traj_dim
             self.traj_form = args.traj_form
-            self.user_traj = np.loadtxt(f"../data/{args.dataset}_{args.traj_file}.txt")
+            self.user_traj = np.loadtxt(f"../data/{dataset}_{args.traj_file}.txt")
             self.user_traj = np.concatenate(
                 (np.zeros((self.traj_dim, self.user_traj.shape[1])), self.user_traj)
             )
@@ -99,23 +103,6 @@ class NewRec(torch.nn.Module):
             # seqs = self.emb_dropout(seqs)
         else:
             seqs = self.position_enc(seqs)
-
-        # if self.traj_form == 'attention':
-        #     user_percs = self.user_traj.T[
-        #         np.repeat(np.expand_dims(users - 1, -1), time1_seqs.shape[1], -1),
-        #         time1_seqs + self.traj_dim
-        #     ]
-        #     user_percs = np.minimum(99, user_percs*self.traj_perc/100).astype(int)
-        #     user_seqs = self.user_enc(user_percs).squeeze(0)
-
-        #     timeline_mask = torch.BoolTensor(log_seqs == 0).to(self.dev)
-        #     timeline_mask = torch.repeat_interleave(timeline_mask, 2, 1)
-        #     seqs = torch.stack((seqs, user_seqs), dim=2).view(seqs.shape[0], -1, seqs.shape[2])
-        #     seqs *= ~timeline_mask.unsqueeze(-1)  # broadcast in last dim
-        #     tl = seqs.shape[1]  # time dim len for enforce causality
-        #     attention_mask = ~torch.tril(
-        #         torch.ones((tl, tl), dtype=torch.bool, device=self.dev)
-        #     )
 
         if self.itemgrp:
             grp_seqs = torch.Tensor(self.grp_feat[log_seqs, :]).to(self.dev)
@@ -190,15 +177,17 @@ class NewRec(torch.nn.Module):
         neg_embed = log_feats[:, -1, :][neg_user]
 
         # obtain popularity-based embeddings for positive and negative item sequences
-        if args.prev_time:
+        if self.prev_time:
+            mod_time1 = time1_seqs[:,:-1]
             mod_time2 = time2_seqs[:,:-1]
         else:
+            mod_time1 = time1_seqs[:,1:]
             mod_time2 = np.where(time2_seqs[:,1:] == 0, time2_seqs[:,1:], time2_seqs[:,1:]-1)
         pos_embs = self.embed_layer(
-            self.popularity_enc(pos_seqs, time1_seqs[:,1:], mod_time2)
+            self.popularity_enc(pos_seqs, mod_time1, mod_time2)
         )
         neg_embs = self.embed_layer(
-            self.popularity_enc(neg_seqs, time1_seqs[:,1:], mod_time2)
+            self.popularity_enc(neg_seqs, mod_time1, mod_time2)
         )
 
         if self.itemgrp:
@@ -247,7 +236,7 @@ class NewRec(torch.nn.Module):
         # time2_pred = np.tile(time2_seqs[0][-1], item_indices.shape)
         item_embs = self.embed_layer(
             self.popularity_enc(
-                item_indices, time1_pred, time2_pred - 1
+                item_indices, time1_pred, time2_pred
             )
         )
         if self.itemgrp and self.comb:
@@ -267,6 +256,8 @@ class NewRec(torch.nn.Module):
         return logits
 
     def regloss(self, users, pos_users, neg_users, triplet_loss, cos_loss):
+        if not triplet_loss and not cos_loss:
+            return 0
         users, pos_users, neg_users = (
             users.to(self.dev),
             pos_users.to(self.dev),
@@ -564,6 +555,7 @@ class BERT4Rec(torch.nn.Module):
         self.pos_emb = torch.nn.Embedding(args.maxlen, args.hidden_units)
         self.emb_dropout = torch.nn.Dropout(p=args.dropout_rate)
         self.logsoftmax = torch.nn.LogSoftmax(dim=1)
+        self.pause = hasattr(args, 'pause') and args.pause
 
         # multi-layers transformer blocks, deep network
         self.attention_layernorms = torch.nn.ModuleList()  # to be Q for self-attention
@@ -641,8 +633,13 @@ class BERT4Rec(torch.nn.Module):
 
     def predict(self, seqs, candidates):
         scores = self.forward(seqs)  # T x V
-        scores = scores[-1, :]  # V
         candidates = candidates.to(self.dev)
-        scores = scores.gather(0, candidates)  # C
+        scores = torch.reshape(scores, (seqs.shape[0], seqs.shape[1], -1))[:,-1,:]
+        if len(candidates.shape) == 1:
+            candidates = torch.unsqueeze(candidates, 0)
+        scores = scores.gather(1, candidates)
+        # else:
+            # scores = scores[-1, :]
+            # scores = scores.gather(0, candidates)
 
         return scores

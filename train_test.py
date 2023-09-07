@@ -10,11 +10,15 @@ from model import SASRec, NewRec, NewB4Rec, BERT4Rec, BPRMF
 from utils import *
 
 
-def train_test(args, sampler, num_batch, model, dataset, epoch_start_idx, write, usernegs):
+def train_test(args, sampler, num_batch, model, dataset, epoch_start_idx, write, usernegs, second, sampler2, num_batch2, model2, dataset2):
     f = open(os.path.join(write, "log.txt"), "w")
     adam_optimizer = torch.optim.Adam(
         model.parameters(), lr=args.lr, betas=(0.9, 0.98), weight_decay=args.wd
     )
+    if second:
+        adam_optimizer2 = torch.optim.Adam(
+            model2.parameters(), lr=args.lr, betas=(0.9, 0.98), weight_decay=args.wd
+        )
 
     T = 0.0
     t0 = time.time()
@@ -82,7 +86,8 @@ def train_test(args, sampler, num_batch, model, dataset, epoch_start_idx, write,
                     np.array(pos),
                     np.array(neg),
                 )
-                # pdb.set_trace()
+                if hasattr(args, 'pause') and args.pause:
+                    pdb.set_trace()
                 if args.triplet_loss or args.cos_loss:
                     # find closest and furthest user pairs within sample for regularization
                     batch_dist = distance_matrix(user_feat.T[u - 1], user_feat.T[u - 1])
@@ -120,6 +125,46 @@ def train_test(args, sampler, num_batch, model, dataset, epoch_start_idx, write,
                         epoch, step, bceloss, loss.item() - bceloss
                     )
                 )
+
+            if second:
+                model1_dict = {k: v for k, v in model.state_dict().items() if k not in ["popularity_enc.month_pop_table", "popularity_enc.week_pop_table", "position_enc.pos_table", "user_enc.act_table"]}
+                model2_dict = model2.state_dict()
+                model2_dict.update(model1_dict)
+                model2.load_state_dict(model2_dict)
+                for step in range(num_batch):
+                    u, seq, time1, time2, pos, neg = sampler.next_batch()
+                    u, seq, time1, time2, pos, neg = (
+                        np.array(u),
+                        np.array(seq),
+                        np.array(time1),
+                        np.array(time2),
+                        np.array(pos),
+                        np.array(neg),
+                    )
+                    pos_logits, neg_logits, embed, pos_embed, neg_embed = model(
+                        u, seq, time1, time2, pos, neg, np.array([]), np.array([])
+                    )
+                    pos_labels, neg_labels = torch.ones(
+                        pos_logits.shape, device=args.device
+                    ), torch.zeros(neg_logits.shape, device=args.device)
+                    adam_optimizer.zero_grad()
+                    loss = 0
+                    indices = np.where(pos != 0)
+                    loss += bce_criterion(pos_logits[indices], pos_labels[indices])
+                    loss += bce_criterion(neg_logits[indices], neg_labels[indices])
+                    bceloss = loss.item()
+                    loss.backward()
+                    adam_optimizer.step()
+                    print(
+                        "loss in epoch {} iteration {} dataset 2: bce {} reg {}".format(
+                            epoch, step, bceloss, loss.item() - bceloss
+                        )
+                    )
+                model2_dict = {k: v for k, v in model2.state_dict().items() if k not in ["popularity_enc.month_pop_table", "popularity_enc.week_pop_table", "position_enc.pos_table", "user_enc.act_table"]}
+                model1_dict = model.state_dict()
+                model1_dict.update(model2_dict)
+                model.load_state_dict(model1_dict)
+                    
 
         elif args.model == "newb4rec":
             ce = torch.nn.CrossEntropyLoss(ignore_index=0)
@@ -163,25 +208,29 @@ def train_test(args, sampler, num_batch, model, dataset, epoch_start_idx, write,
                 )
 
         if epoch % args.epoch_test == 0:
-            model.eval()
             t1 = time.time() - t0
             T += t1
-            print(T)
-            # print("Evaluating", end="")
-            t_valid = evaluate(model, dataset, args, "valid", usernegs)
-            # print(
-                # f"epoch:{epoch}, time: {T} (NDCG@{args.topk[0]}: {t_valid[0][0]}, HR@{args.topk[0]}: {t_valid[0][1]})"
-            # )
-            f.write(f"epoch:{epoch}, time: {T} (NDCG@{args.topk[0]}: {t_valid[0][0]}, HR@{args.topk[0]}: {t_valid[0][1]})" + "\n")
-            f.flush()
             t0 = time.time()
+            model.eval()
+            t_valid = evaluate(model, dataset, args, "valid", usernegs)
             model.train()
+            ndcg, hr = t_valid[0][0], t_valid[0][1]
+            f.write(f"epoch:{epoch}, time: {T} (NDCG@{args.topk[0]}: {ndcg}, HR@{args.topk[0]}: {hr})" + "\n")
+            f.flush()
+            if second:
+                model2.eval()
+                t_valid2 = evaluate(model2, dataset2, args, "valid", usernegs2)
+                model2.train()
+                ndcg2, hr2 = t_valid2[0][0], t_valid2[0][1]
+                f.write(f"epoch:{epoch}, time: {T}, dataset 2: (NDCG@{args.topk[0]}: {ndcg2}, HR@{args.topk[0]}: {hr2})" + "\n")
+                f.flush()
+                ndcg = (ndcg + ndcg2)/2
+                hr = (hr + hr2)/2
 
             fname = f"epoch={epoch}.pth"
             torch.save(model.state_dict(), os.path.join(write, fname))
-
-            if t_valid[0][0] > best_ndcg:
-                best_ndcg = t_valid[0][0]
+            if ndcg > best_ndcg:
+                best_ndcg = ndcg
                 best_state = model.state_dict()
                 stop_early = 0
             else:
@@ -195,11 +244,11 @@ def train_test(args, sampler, num_batch, model, dataset, epoch_start_idx, write,
         torch.save(best_state, os.path.join(write, fname))
 
     if args.inference_only or not args.train_only:
+        model.eval()
         if not args.inference_only:
             model_dict = model.state_dict()
             model_dict.update(best_state)
             model.load_state_dict(model_dict)
-        model.eval()
         t_test = evaluate(model, dataset, args, "test", usernegs)
         for i, k in enumerate(args.topk):
             #print(f"NDCG@{k}: {t_test[i][0]}, HR@{k}: {t_test[i][1]}")
