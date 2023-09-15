@@ -34,6 +34,8 @@ def sample_function_newrec(
         seq = np.array(user_train[0][user][:maxlen], dtype=np.int32)
         time1 = np.array(user_train[1][user], dtype=np.int32)
         time2 = np.array(user_train[2][user], dtype=np.int32)
+        if len(user_train) > 3:
+            time_embed = np.array(user_train[3][user], dtype=np.int32)
         pos = np.zeros([maxlen], dtype=np.int32)
         neg = np.zeros([maxlen], dtype=np.int32)
         nxt = user_train[0][user][-1]
@@ -52,6 +54,8 @@ def sample_function_newrec(
             if idx == -1:
                 break
 
+        if len(user_train) > 3:
+            return (user, seq, time1, time2, time_embed, pos, neg)
         return (user, seq, time1, time2, pos, neg)
 
     np.random.seed(SEED)
@@ -300,7 +304,7 @@ def setup_negatives(dataset, dataname):
     print("finished " + dataname)
 
 
-def evaluate(model, dataset, args, mode, usernegs):
+def evaluate(model, dataset, args, mode, usernegs, second=False):
     if args.model == "newrec":
         predict = newpredict_newrec
     elif args.model == "newb4rec":
@@ -314,8 +318,9 @@ def evaluate(model, dataset, args, mode, usernegs):
     elif args.model == "bert4rec":
         predict = newpredict_bert4rec
 
+    load = args.dataset2 if second else args.dataset
     if args.eval_quality:
-        userpop = np.loadtxt(f"../data/{args.dataset}_{args.userpop}.txt")
+        userpop = np.loadtxt(f"../data/{load}_{args.userpop}.txt")
         userpop = 100 * rankdata(userpop) / len(userpop)
         userpop[userpop > 99] = 99
         numgroups = int(100 // args.quality_size)
@@ -337,7 +342,7 @@ def evaluate(model, dataset, args, mode, usernegs):
     evaluate = test if mode == "test" else valid
 
     if args.model == "mostpop":
-        misc = np.loadtxt(f"../data/{args.dataset}_{args.rawpop}.txt")
+        misc = np.loadtxt(f"../data/{load}_{args.rawpop}.txt")
     else:
         misc = None
 
@@ -447,31 +452,46 @@ def newpredict_newrec(model, evaluate, train, valid, test, itemnum, args, mode, 
         item_idxs = seqs_test
         item_t1s = t1s_test
         item_t2s = t2s_test
+        if args.time_embed:
+            tes = np.array(list(itemgetter(*users)(test[3])))
     else:
         item_idxs = seqs_valid
         item_t1s = t1s_valid
         item_t2s = t2s_valid
+        if args.time_embed:
+            tes = np.array(list(itemgetter(*users)(valid[3])))
     seqs = seqs[:, -args.maxlen:]
     t1s = t1s[:, -args.maxlen:]
     t2s = t2s[:, -args.maxlen:]
+    if args.time_embed:
+        tes = tes[:, -args.maxlen:]
 
     negs = np.array(list(itemgetter(*usernegs.keys())(usernegs)))
     cond = np.isin(users, list(usernegs.keys())) # (item_idxs != 0) & ()
     seqs, t1s, t2s, item_idxs, item_t1s, item_t2s, users = seqs[cond], t1s[cond], t2s[cond], item_idxs[cond], item_t1s[cond], item_t2s[cond], np.array(users)[cond]
+    if args.time_embed:
+        tes = tes[cond]
     cond = item_idxs != 0
     seqs, t1s, t2s, item_idxs, item_t1s, item_t2s, users = seqs[cond], t1s[cond], t2s[cond], item_idxs[cond], item_t1s[cond], item_t2s[cond], np.array(users)[cond]
+    if args.time_embed:
+        tes = tes[cond]
     item_idxs = np.concatenate((np.expand_dims(item_idxs, -1), negs), axis=1)
+    t1s, t2s, item_t1s, item_t2s = np.maximum(0, t1s - 1 - args.lag//4), np.maximum(0, t2s - args.lag), np.maximum(0, item_t1s - 1 - args.lag//4), np.maximum(0, item_t2s - args.lag)
     if args.prev_time:
         item_t1s = np.repeat(np.expand_dims(t1s[:,-1], -1), item_idxs.shape[1], axis=1)
         item_t2s = np.repeat(np.expand_dims(t2s[:,-1], -1), item_idxs.shape[1], axis=1)
     else:
         item_t1s = np.repeat(np.expand_dims(item_t1s, -1), item_idxs.shape[1], axis=1)
-        item_t2s = np.repeat(np.expand_dims(item_t2s, -1), item_idxs.shape[1], axis=1) - 1
+        item_t2s = np.repeat(np.expand_dims(item_t2s, -1), item_idxs.shape[1], axis=1)
     fullranks = np.zeros(seqs.shape[0])
     for i in range(seqs.shape[0]//1000+1):
         inds = np.arange(1000*i, min(1000*(i+1), seqs.shape[0]))
+        if args.time_embed:
+            send = tes[inds]
+        else:
+            send = None
         predictions = -model.predict(
-            *[np.array(l) for l in [seqs[inds], t1s[inds], t2s[inds], item_idxs[inds], item_t1s[inds], item_t2s[inds], users[inds]]]
+            *[np.array(l) for l in [seqs[inds], t1s[inds], t2s[inds], send, item_idxs[inds], item_t1s[inds], item_t2s[inds], users[inds]]]
         )
         fullranks[inds] = predictions.argsort(axis=1).argsort(axis=1)[:, 0].to('cpu')
     return fullranks, np.array(list(usernegs.keys()))[cond]
@@ -560,11 +580,6 @@ def predict_newb4rec(model, evaluate, train, valid, test, itemnum, args, mode, n
 
 
 def predict_mostpop(model, evaluate, train, valid, test, itemnum, args, mode, negs, rawpop):
-    if mode == "test":
-        t1 = test[1] - 1
-    else:
-        t1 = valid[1] - 1
-
     if args.eval_method == 1:
         item_idx = [evaluate[0]]
         item_idx.extend(negs)
@@ -577,7 +592,14 @@ def predict_mostpop(model, evaluate, train, valid, test, itemnum, args, mode, ne
         item_idx.insert(0, evaluate[0])
 
     # pdb.set_trace()
-    predictions = -rawpop[t1, np.array(item_idx)-1]
+    if len(rawpop.shape) == 2:
+        if mode == "test":
+            t1 = test[1] - 1
+        else:
+            t1 = valid[1] - 1
+        predictions = -rawpop[t1, np.array(item_idx)-1]
+    else:
+        predictions = -rawpop[np.array(item_idx)-1]
     rank = predictions.argsort().argsort()[0].item()
     return rank
 

@@ -10,7 +10,7 @@ from model import SASRec, NewRec, NewB4Rec, BERT4Rec, BPRMF
 from utils import *
 
 
-def train_test(args, sampler, num_batch, model, dataset, epoch_start_idx, write, usernegs, second, sampler2, num_batch2, model2, dataset2):
+def train_test(args, sampler, num_batch, model, dataset, epoch_start_idx, write, usernegs, second, sampler2, num_batch2, model2, dataset2, usernegs2):
     f = open(os.path.join(write, "log.txt"), "w")
     adam_optimizer = torch.optim.Adam(
         model.parameters(), lr=args.lr, betas=(0.9, 0.98), weight_decay=args.wd
@@ -77,17 +77,13 @@ def train_test(args, sampler, num_batch, model, dataset, epoch_start_idx, write,
         elif args.model == "newrec":
             bce_criterion = torch.nn.BCEWithLogitsLoss()
             for step in range(num_batch):
-                u, seq, time1, time2, pos, neg = sampler.next_batch()
-                u, seq, time1, time2, pos, neg = (
-                    np.array(u),
-                    np.array(seq),
-                    np.array(time1),
-                    np.array(time2),
-                    np.array(pos),
-                    np.array(neg),
-                )
-                if hasattr(args, 'pause') and args.pause:
-                    pdb.set_trace()
+                if not args.time_embed:
+                    u, seq, time1, time2, pos, neg = sampler.next_batch()
+                    u, seq, time1, time2, pos, neg = (np.array(u), np.array(seq), np.array(time1), np.array(time2), np.array(pos), np.array(neg))
+                    time_embed = None
+                else:
+                    u, seq, time1, time2, time_embed, pos, neg = sampler.next_batch()
+                    u, seq, time1, time2, time_embed, pos, neg = (np.array(u), np.array(seq), np.array(time1), np.array(time2), np.array(time_embed), np.array(pos), np.array(neg))
                 if args.triplet_loss or args.cos_loss:
                     # find closest and furthest user pairs within sample for regularization
                     batch_dist = distance_matrix(user_feat.T[u - 1], user_feat.T[u - 1])
@@ -101,7 +97,7 @@ def train_test(args, sampler, num_batch, model, dataset, epoch_start_idx, write,
                     pos_user = np.array([])
                     neg_user = np.array([])
                 pos_logits, neg_logits, embed, pos_embed, neg_embed = model(
-                    u, seq, time1, time2, pos, neg, pos_user, neg_user
+                    u, seq, time1, time2, time_embed, pos, neg, pos_user, neg_user
                 )
                 pos_labels, neg_labels = torch.ones(
                     pos_logits.shape, device=args.device
@@ -219,7 +215,7 @@ def train_test(args, sampler, num_batch, model, dataset, epoch_start_idx, write,
             f.flush()
             if second:
                 model2.eval()
-                t_valid2 = evaluate(model2, dataset2, args, "valid", usernegs2)
+                t_valid2 = evaluate(model2, dataset2, args, "valid", usernegs2, True)
                 model2.train()
                 ndcg2, hr2 = t_valid2[0][0], t_valid2[0][1]
                 f.write(f"epoch:{epoch}, time: {T}, dataset 2: (NDCG@{args.topk[0]}: {ndcg2}, HR@{args.topk[0]}: {hr2})" + "\n")
@@ -250,6 +246,12 @@ def train_test(args, sampler, num_batch, model, dataset, epoch_start_idx, write,
             model_dict.update(best_state)
             model.load_state_dict(model_dict)
         t_test = evaluate(model, dataset, args, "test", usernegs)
+        if second:
+            model2.eval()
+            t_test2 = evaluate(model2, dataset2, args, "test", usernegs2, True)
+            for i in range(len(args.topk)):
+                t_test[i][0] = (t_test[i][0] + t_test2[i][0])/2
+                t_test[i][1] = (t_test[i][1] + t_test2[i][1])/2
         for i, k in enumerate(args.topk):
             #print(f"NDCG@{k}: {t_test[i][0]}, HR@{k}: {t_test[i][1]}")
             f.write(f"NDCG@{k}: {t_test[i][0]}, HR@{k}: {t_test[i][1]} \n")

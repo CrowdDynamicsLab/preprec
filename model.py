@@ -19,7 +19,32 @@ class NewRec(torch.nn.Module):
         dataset = args.dataset if not second else args.dataset2
         self.prev_time = args.prev_time
         self.lag = args.lag
-        self.pause = hasattr(args, 'pause') and args.pause
+        self.time_embed = args.time_embed
+        self.time_no_fixed_embed = args.time_no_fixed_embed
+        self.time_embed_concat = args.time_embed_concat
+        self.pause = args.pause
+
+        self.hidden_units = args.hidden_units * self.num_heads
+        if self.num_heads == 2:
+            self.gate = Gate(args.hidden_units)
+
+        self.popularity_enc = PopularityEncoding(args)
+        self.embed_layer = InitFeedForward(
+            args.input_units1 + args.input_units2,
+            args.hidden_units * 2,
+            args.hidden_units,
+        )
+        if self.num_heads == 2:
+            self.embed_layer2 = InitFeedForward2(args.hidden_units, args.hidden_units)
+        if self.no_fixed_emb:
+            self.pos_emb = torch.nn.Embedding(args.maxlen, args.hidden_units)
+        else:
+            self.position_enc = PositionalEncoding(args.hidden_units, args.maxlen)
+        if self.time_embed:
+            if self.time_no_fixed_embed:
+                self.time_pos_emb = torch.nn.Embedding(args.maxlen+1, args.hidden_units)
+            else:
+                self.time_position_enc = ModPositionalEncoding(args.hidden_units, args.maxlen+1)
 
         self.itemgrp = args.itemgrp
         if self.itemgrp:
@@ -46,21 +71,6 @@ class NewRec(torch.nn.Module):
                     args.hidden_units, self.traj_perc, args.traj_enc_type
                 )
                 self.num_heads += 1
-
-        self.hidden_units = args.hidden_units * self.num_heads
-        if self.num_heads == 2:
-            self.gate = Gate(args.hidden_units)
-
-        self.popularity_enc = PopularityEncoding(args)
-        self.embed_layer = InitFeedForward(
-            args.input_units1 + args.input_units2,
-            args.hidden_units * 2,
-            args.hidden_units,
-        )
-        if self.no_fixed_emb:
-            self.pos_emb = torch.nn.Embedding(args.maxlen, args.hidden_units)
-        else:
-            self.position_enc = PositionalEncoding(args.hidden_units, args.maxlen)
 
         if args.triplet_loss:
             self.triplet_loss = torch.nn.TripletMarginLoss(margin=0.0, p=2)
@@ -91,7 +101,7 @@ class NewRec(torch.nn.Module):
             new_fwd_layer = PointWiseFeedForward(self.hidden_units, args.dropout_rate)
             self.forward_layers.append(new_fwd_layer)
 
-    def log2feats(self, users, log_seqs, time1_seqs, time2_seqs):
+    def log2feats(self, users, log_seqs, time1_seqs, time2_seqs, time_embed):
         # obtain popularity-based feature vectors for sequence history, apply embedding layer, add positional encoding
         seqs = self.popularity_enc(log_seqs, time1_seqs, time2_seqs)
         seqs = self.embed_layer(seqs)
@@ -100,12 +110,21 @@ class NewRec(torch.nn.Module):
                 np.array(range(log_seqs.shape[1])), [log_seqs.shape[0], 1]
             )
             seqs += self.pos_emb(torch.LongTensor(positions).to(self.dev))
-            # seqs = self.emb_dropout(seqs)
         else:
-            seqs = self.position_enc(seqs)
+            seqs += self.position_enc(seqs)
+
+        if self.time_embed:
+            if self.time_no_fixed_embed:
+                timeres = self.time_pos_emb(torch.LongTensor(time_embed).to(self.dev))
+            else:
+                timeres = self.time_position_enc(time_embed)
+            if self.time_embed_concat:
+                seqs = torch.stack((seqs, timeres), dim=2).view(seqs.shape[0], -1, seqs.shape[2])
+            else:
+                seqs += timeres 
 
         if self.itemgrp:
-            grp_seqs = torch.Tensor(self.grp_feat[log_seqs, :]).to(self.dev)
+            grp_seqs = self.embed_layer2(torch.Tensor(self.grp_feat[log_seqs, :]).to(self.dev))
             seqs = torch.cat((seqs, grp_seqs), dim=-1)
 
         if self.traj_form == 'attention':
@@ -117,10 +136,13 @@ class NewRec(torch.nn.Module):
             except:
                 pdb.set_trace()
             user_percs = np.minimum(99, user_percs*self.traj_perc/100).astype(int)
-            user_seqs = self.user_enc(user_percs).squeeze(0).to(self.dev)
+            user_seqs = self.embed_layer2(self.user_enc(user_percs).squeeze(0).to(self.dev))
             seqs = torch.cat((seqs, user_seqs), dim=-1)
 
-        timeline_mask = torch.BoolTensor(log_seqs == 0).to(self.dev)
+        if self.time_embed and self.time_embed_concat:
+            timeline_mask = torch.repeat_interleave(torch.BoolTensor(log_seqs == 0), 2, dim=1).to(self.dev)
+        else:
+            timeline_mask = torch.BoolTensor(log_seqs == 0).to(self.dev)
         seqs *= ~timeline_mask.unsqueeze(-1)  # broadcast in last dim
         tl = seqs.shape[1]  # time dim len for enforce causality
         attention_mask = ~torch.tril(
@@ -140,9 +162,10 @@ class NewRec(torch.nn.Module):
 
         log_feats = self.last_layernorm(seqs)  # (U, T, C) -> (U, -1, C)
         if self.num_heads == 2:
-            # pdb.set_trace()
             log_feats = self.gate(log_feats[:, :, :self.hidden_units//self.num_heads], log_feats[:, :, self.hidden_units//self.num_heads:])
 
+        if self.time_embed_concat:
+            log_feats = log_feats[:, np.arange(400, step=2)]
         return log_feats
 
     def user2feats(self, users, time1_seqs):
@@ -162,12 +185,14 @@ class NewRec(torch.nn.Module):
         log_seqs,
         time1_seqs,
         time2_seqs,
+        time_embed,
         pos_seqs,
         neg_seqs,
         pos_user,
         neg_user,
     ):  # for training
-        log_feats = self.log2feats(users, log_seqs, time1_seqs[:,:-1], time2_seqs[:,:-1])
+        time1_seqs, time2_seqs = np.maximum(0, time1_seqs - 1 - self.lag//4), np.maximum(0, time2_seqs - self.lag)
+        log_feats = self.log2feats(users, log_seqs, time1_seqs[:,:-1], time2_seqs[:,:-1], time_embed)
         if self.traj_form == 'mlp':
             user_feats = self.user2feats(users, time1_seqs[:,:-1])
             full_feats = 0.5 * log_feats + 0.5 * user_feats
@@ -178,11 +203,9 @@ class NewRec(torch.nn.Module):
 
         # obtain popularity-based embeddings for positive and negative item sequences
         if self.prev_time:
-            mod_time1 = time1_seqs[:,:-1]
-            mod_time2 = time2_seqs[:,:-1]
+            mod_time1, mod_time2 = time1_seqs[:,:-1], time2_seqs[:,:-1]
         else:
-            mod_time1 = time1_seqs[:,1:]
-            mod_time2 = np.where(time2_seqs[:,1:] == 0, time2_seqs[:,1:], time2_seqs[:,1:]-1)
+            mod_time1, mod_time2 = time1_seqs[:,1:], time1_seqs[:,1:]
         pos_embs = self.embed_layer(
             self.popularity_enc(pos_seqs, mod_time1, mod_time2)
         )
@@ -221,9 +244,9 @@ class NewRec(torch.nn.Module):
         return pos_logits, neg_logits, full_feats[:, -1, :], pos_embed, neg_embed
 
     def predict(
-        self, log_seqs, time1_seqs, time2_seqs, item_indices, time1_pred, time2_pred, user
+        self, log_seqs, time1_seqs, time2_seqs, time_embed, item_indices, time1_pred, time2_pred, user
     ):  # for inference
-        log_feats = self.log2feats(user, log_seqs, time1_seqs, time2_seqs)
+        log_feats = self.log2feats(user, log_seqs, time1_seqs, time2_seqs, time_embed)
         if self.traj_form == 'mlp':
             user_feats = self.user2feats(user, time1_seqs)
             full_feats = 0.5 * log_feats + 0.5 * user_feats
@@ -555,7 +578,7 @@ class BERT4Rec(torch.nn.Module):
         self.pos_emb = torch.nn.Embedding(args.maxlen, args.hidden_units)
         self.emb_dropout = torch.nn.Dropout(p=args.dropout_rate)
         self.logsoftmax = torch.nn.LogSoftmax(dim=1)
-        self.pause = hasattr(args, 'pause') and args.pause
+        self.pause = args.pause
 
         # multi-layers transformer blocks, deep network
         self.attention_layernorms = torch.nn.ModuleList()  # to be Q for self-attention
@@ -583,7 +606,6 @@ class BERT4Rec(torch.nn.Module):
         self.out = torch.nn.Linear(
             args.hidden_units, args.hidden_units
         )  # self.item_num+1)
-        # self.out_bias = torch.nn.Parameter(torch.zeros(self.item_num+1)).cuda()
 
     def GELU(self, x):
         return (
@@ -625,7 +647,6 @@ class BERT4Rec(torch.nn.Module):
         final_feat = self.GELU(final_feat)
         item_embs = self.item_emb(torch.arange(0, self.item_num + 1).to(self.dev))
         logits = item_embs.matmul(final_feat.unsqueeze(-1)).squeeze(-1)
-        # logits = logits + self.out_bias #, causing out of memory issues for large batch size
         logits = logits.view(-1, logits.size(-1))  # (B*T) x V
         logits = self.logsoftmax(logits)
 

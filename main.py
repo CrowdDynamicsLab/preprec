@@ -64,7 +64,10 @@ if __name__ == "__main__":
             )
             [user_train, user_valid, user_test, usernum, itemnum, user_dict] = dataset
         else:
-            dataset = data_partition(args.dataset, args.maxlen)
+            if args.time_embed:
+                dataset = data_partition_wtime(args.dataset, args.maxlen)
+            else:
+                dataset = data_partition(args.dataset, args.maxlen)
             [user_train, user_valid, user_test, usernum, itemnum] = dataset
             if args.dataset2 != "":
                 dataset2 = data_partition(args.dataset2, args.maxlen)
@@ -201,5 +204,6 @@ if __name__ == "__main__":
         num_batch2 = None
         model2 = None
         dataset2 = None
+        usernegs2 = None
     print("starting training/testing")
-    train_test(args, sampler, num_batch, model, dataset, epoch_start_idx, write, usernegs, second, sampler2, num_batch2, model2, dataset2)
+    train_test(args, sampler, num_batch, model, dataset, epoch_start_idx, write, usernegs, second, sampler2, num_batch2, model2, dataset2, usernegs2)

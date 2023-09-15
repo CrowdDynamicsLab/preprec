@@ -56,6 +56,18 @@ class InitFeedForward(torch.nn.Module):
         return outputs
 
 
+class InitFeedForward2(torch.nn.Module):
+    def __init__(self, input_units, hidden_units):
+        super(InitFeedForward2, self).__init__()
+
+        self.fc1 = torch.nn.Linear(input_units, hidden_units)
+        self.relu = torch.nn.ReLU()
+
+    def forward(self, inputs):
+        outputs = self.relu(self.fc1(inputs))
+        return outputs
+
+
 class Gate(torch.nn.Module):
     def __init__(self, hidden=50, dropout_rate=0):
         super(Gate, self).__init__()
@@ -198,7 +210,36 @@ class PositionalEncoding(torch.nn.Module):
         return torch.FloatTensor(sinusoid_table).unsqueeze(0)
 
     def forward(self, x):
-        return x + self.pos_table[:, : x.size(1)].clone().detach()
+        return self.pos_table[:, : x.size(1)].clone().detach()
+        
+
+class ModPositionalEncoding(torch.nn.Module):
+    def __init__(self, d_hid, n_position):
+        super(ModPositionalEncoding, self).__init__()
+        # Not a parameter
+        self.register_buffer(
+            "pos_table", self._get_sinusoid_encoding_table(n_position, d_hid)
+        )
+
+    def _get_sinusoid_encoding_table(self, n_position, d_hid):
+        """Sinusoid position encoding table"""
+
+        def get_position_angle_vec(position):
+            return [
+                position / np.power(10000, 2 * (hid_j // 2) / d_hid)
+                for hid_j in range(d_hid)
+            ]
+
+        sinusoid_table = np.array(
+            [get_position_angle_vec(pos_i) for pos_i in range(n_position)]
+        )
+        sinusoid_table[:, 0::2] = np.sin(sinusoid_table[:, 0::2])  # dim 2i
+        sinusoid_table[:, 1::2] = np.cos(sinusoid_table[:, 1::2])  # dim 2i+1
+
+        return torch.FloatTensor(sinusoid_table).unsqueeze(0)
+
+    def forward(self, x):
+        return self.pos_table[0, x.flatten()].clone().detach().reshape(x.shape[0], x.shape[1], -1)
         
 
 
@@ -249,7 +290,6 @@ class PopularityEncoding(torch.nn.Module):
         self.input2 = args.input_units2
         self.base_dim1 = args.base_dim1
         self.base_dim2 = args.base_dim2
-        self.pause = hasattr(args, 'pause') and args.pause
         # table of fixed feature vectors for items by time, shape: (num_times*base_dim, num_items)
         month_pop = np.loadtxt(f"../data/{args.dataset}_{args.monthpop}.txt")
         week_pop = np.loadtxt(f"../data/{args.dataset}_{args.weekpop}.txt")

@@ -7,7 +7,7 @@ def parse():
     parser.add_argument('--train_dir', default='test', type=str, help='directory to write model to')
     parser.add_argument('--batch_size', default=128, type=int)
     parser.add_argument('--lr', default=0.001, type=float)
-    parser.add_argument('--wd', default=0.0, type=float)
+    parser.add_argument('--wd', default=1e-5, type=float)
     parser.add_argument('--maxlen', default=200, type=int)
     parser.add_argument('--hidden_units', default=50, type=int)
     parser.add_argument('--num_blocks', default=2, type=int)
@@ -27,7 +27,7 @@ def parse():
     parser.add_argument('--model', default='newrec', type=str, help='newrec | mostpop | sasrec | bert4rec | bprmf')
     parser.add_argument('--monthpop', default='wtembed', type=str, help='format of month popularity: wtembed (time-weighted) | currembed (current month) | cumembed (cumulative)')
     parser.add_argument('--weekpop', default='week_embed2', type=str, help='format of week popularity: current is 4-week popularity')
-    parser.add_argument('--rawpop', default='rawpop', type=str, help='format of popularity for mostpop model: current is cumulative')
+    parser.add_argument('--rawpop', default='rawpop', type=str, help='format of popularity for mostpop model: rawpop (cumulative) | rawcurrpop (current)')
     parser.add_argument('--userpop', default='lastuserpop', type=str, help='ultimate user popularity used if eval_quality true')
     parser.add_argument('--base_dim1', default=11, type=int, help='dimension of month popularity vector, newrec only')
     parser.add_argument('--input_units1', default=132, type=int, help='base_dim1 * number of months considered, newrec only')
@@ -65,6 +65,9 @@ def parse():
     parser.add_argument('--pause', action='store_true', help='pause')
     parser.add_argument('--dataset2', default='', type=str, help='second dataset to train on, newrec only')
     parser.add_argument('--lag', default=1, type=int, help='time lag for prediction, newrec only')
+    parser.add_argument('--time_embed', action='store_true', help='add relative time-based embedding, similar to positional')
+    parser.add_argument('--time_no_fixed_embed', action='store_true', help='learnable positional embedding, same as no_fixed_emb but for time')
+    parser.add_argument('--time_embed_concat', action='store_true', help='concatenate (not add) time embed')
 
     args = parser.parse_args()
     return args
