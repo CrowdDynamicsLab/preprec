@@ -6,3 +6,4 @@ res*
 runs/
 data/*
 !data/data.ipynb
+!data/data.py
