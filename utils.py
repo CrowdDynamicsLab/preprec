@@ -3,7 +3,7 @@ import copy
 import torch
 import random
 import numpy as np
-from collections import defaultdict
+from collections import defaultdict, Counter
 from multiprocessing import Process, Queue
 import pdb
 import math
@@ -281,13 +281,11 @@ class WarpSampler(object):
             p.join()
 
 
-def setup_negatives(dataset, dataname):
+def setup_negatives(dataset, dataname, mod):
     [train, valid, test, usernum, itemnum] = copy.deepcopy(dataset)
     users = range(1, usernum + 1)
     usersneg = {}
     for u in users:
-        if len(train[0][u]) < 1 or valid[0][u] == 0 or test[0][u] == 0:
-            continue
         rated = set(train[0][u])
         rated.add(valid[0][u])
         rated.add(test[0][u])
@@ -299,9 +297,9 @@ def setup_negatives(dataset, dataname):
             rated.add(t)
             negs.append(t)
         usersneg[u] = negs
-    with open(f"../data/{dataname}_userneg.pickle", 'wb') as handle:
+    with open(f"../data/{dataname}{mod}_userneg.pickle", 'wb') as handle:
         pickle.dump(usersneg, handle, protocol=pickle.HIGHEST_PROTOCOL)
-    print("finished " + dataname)
+    print("finished negative setup for " + dataname)
 
 
 def evaluate(model, dataset, args, mode, usernegs, second=False):
@@ -321,14 +319,13 @@ def evaluate(model, dataset, args, mode, usernegs, second=False):
     load = args.dataset2 if second else args.dataset
     if args.eval_quality:
         userpop = np.loadtxt(f"../data/{load}_{args.userpop}.txt")
+        if load == "amazon/amazon_office":
+            change_inds = np.random.choice(np.where(userpop==5)[0], userpop[userpop==5].size//2, replace=False)
+            userpop[change_inds] = 5.5
         userpop = 100 * rankdata(userpop) / len(userpop)
         userpop[userpop > 99] = 99
         numgroups = int(100 // args.quality_size)
-        metrics = [
-            ([0.0 for _ in range(numgroups)], [0.0 for _ in range(numgroups)])
-            for _ in args.topk
-        ]
-        counts = [0 for _ in range(numgroups)]
+        metrics = [([0.0 for _ in range(numgroups)], [0.0 for _ in range(numgroups)]) for _ in args.topk]
     else:
         metrics = [[0.0, 0.0] for _ in args.topk]
 
@@ -350,17 +347,42 @@ def evaluate(model, dataset, args, mode, usernegs, second=False):
 
     if args.model in ["newrec", "bert4rec", "sasrec"]:
         ranks, predusers = predict(model, evaluate, train, valid, test, itemnum, args, mode, usernegs, users)
-        valid_user = len(ranks)
 
         if args.eval_quality:
             locs = Counter((userpop[predusers] // args.quality_size).astype(int))
-            for key, val in locs:
-                counts[key] = val
+
+        if args.use_scores:
+            for j in range(len(args.alphas)):
+                valid_user = len(ranks[j])
+                tempranks = ranks[j]
+                if not args.eval_quality:
+                    metrics = [[0.0, 0.0] for _ in args.topk]
+                    for i, k in enumerate(args.topk):
+                        modranks = tempranks[tempranks < k]
+                        metrics[i][0] = np.sum(1 / np.log2(modranks + 2))
+                        metrics[i][1] = len(modranks) 
+                    metrics = [
+                        [metrics[i][j] / valid_user for j in range(2)]
+                        for i in range(len(args.topk))
+                    ]
+                else:
+                    metrics = [([0.0 for _ in range(numgroups)], [0.0 for _ in range(numgroups)]) for _ in args.topk]
+                    for key in locs:
+                        selranks = tempranks[(userpop[predusers] // args.quality_size).astype(int) == key]
+                        for i, k in enumerate(args.topk):
+                            modranks = selranks[selranks < k]
+                            metrics[i][0][key] = np.sum(1 / np.log2(modranks + 2))
+                            metrics[i][1][key] = len(modranks)
+                    metrics = [[[metrics[m][n][k] / locs[k] for k in range(numgroups) if locs[k] != 0] for n in range(2)] for m in range(len(args.topk))]
+                print(metrics)
+            sys.exit()
+
+        valid_user = len(ranks)
 
         if args.eval_method != 3:
             for i, k in enumerate(args.topk):
                 if args.eval_quality:
-                    for key, val in locs:
+                    for key in locs:
                         selranks = ranks[(userpop[predusers] // args.quality_size).astype(int) == key]
                         modranks = selranks[selranks < k]
                         metrics[i][0][key] = np.sum(1 / np.log2(modranks + 2))
@@ -412,22 +434,9 @@ def evaluate(model, dataset, args, mode, usernegs, second=False):
                 # sys.stdout.flush()
 
     if args.eval_quality:
-        metrics = [
-            [
-                [
-                    metrics[i][j][k] / counts[k]
-                    for k in range(numgroups)
-                    if counts[k] != 0
-                ]
-                for j in range(2)
-            ]
-            for i in range(len(args.topk))
-        ]
+        metrics = [[[metrics[i][j][k] / locs[k] for k in range(numgroups) if locs[k] != 0] for j in range(2)] for i in range(len(args.topk))]
     else:
-        metrics = [
-            [metrics[i][j] / valid_user for j in range(2)]
-            for i in range(len(args.topk))
-        ]
+        metrics = [[metrics[i][j] / valid_user for j in range(2)] for i in range(len(args.topk))]
     print(metrics)
     return metrics
 
@@ -438,9 +447,10 @@ def newpredict_newrec(model, evaluate, train, valid, test, itemnum, args, mode, 
     seqs = np.array(list(itemgetter(*users)(train[0])))
     t1s = np.array(list(itemgetter(*users)(train[1])))
     t2s = np.array(list(itemgetter(*users)(train[2])))
-    seqs_valid = np.array(list(itemgetter(*users)(valid[0])))
-    t1s_valid = np.array(list(itemgetter(*users)(valid[1])))
-    t2s_valid = np.array(list(itemgetter(*users)(valid[2])))
+    if not args.sparse:
+        seqs_valid = np.array(list(itemgetter(*users)(valid[0])))
+        t1s_valid = np.array(list(itemgetter(*users)(valid[1])))
+        t2s_valid = np.array(list(itemgetter(*users)(valid[2])))
     seqs_test = np.array(list(itemgetter(*users)(test[0])))
     t1s_test = np.array(list(itemgetter(*users)(test[1])))
     t2s_test = np.array(list(itemgetter(*users)(test[2])))
@@ -483,7 +493,11 @@ def newpredict_newrec(model, evaluate, train, valid, test, itemnum, args, mode, 
     else:
         item_t1s = np.repeat(np.expand_dims(item_t1s, -1), item_idxs.shape[1], axis=1)
         item_t2s = np.repeat(np.expand_dims(item_t2s, -1), item_idxs.shape[1], axis=1)
-    fullranks = np.zeros(seqs.shape[0])
+    if args.use_scores:
+        use_scores = np.loadtxt(args.use_score_dir)
+        fullranks = [np.zeros(seqs.shape[0]) for _ in args.alphas]
+    else:
+        fullranks = np.zeros(seqs.shape[0])
     for i in range(seqs.shape[0]//1000+1):
         inds = np.arange(1000*i, min(1000*(i+1), seqs.shape[0]))
         if args.time_embed:
@@ -493,7 +507,15 @@ def newpredict_newrec(model, evaluate, train, valid, test, itemnum, args, mode, 
         predictions = -model.predict(
             *[np.array(l) for l in [seqs[inds], t1s[inds], t2s[inds], send, item_idxs[inds], item_t1s[inds], item_t2s[inds], users[inds]]]
         )
-        fullranks[inds] = predictions.argsort(axis=1).argsort(axis=1)[:, 0].to('cpu')
+        if args.use_scores:
+            for j, alpha in enumerate(args.alphas):
+                total = -alpha*predictions.to('cpu').detach().numpy() + use_scores[inds]*(1-alpha)
+                fullranks[j][inds] = (-total).argsort(axis=1).argsort(axis=1)[:, 0] #.to('cpu')
+        else:
+            fullranks[inds] = predictions.argsort(axis=1).argsort(axis=1)[:, 0].to('cpu')
+    if args.save_ranks:
+        np.savetxt('/'.join(args.state_dict_path.split('/')[:-1]) + f"/{args.ranks_name}.txt", fullranks)
+        sys.exit()
     return fullranks, np.array(list(usernegs.keys()))[cond]
 
 
@@ -600,7 +622,8 @@ def predict_mostpop(model, evaluate, train, valid, test, itemnum, args, mode, ne
         predictions = -rawpop[t1, np.array(item_idx)-1]
     else:
         predictions = -rawpop[np.array(item_idx)-1]
-    rank = predictions.argsort().argsort()[0].item()
+    b = np.random.random(predictions.size)
+    rank = np.lexsort((b, predictions)).argsort()[0].item()
     return rank
 
 
@@ -697,12 +720,20 @@ def newpredict_sasrec(model, evaluate, train, valid, test, itemnum, args, mode, 
     seqs, item_idxs, users = seqs[cond], item_idxs[cond], np.array(users)[cond]
     item_idxs = np.concatenate((item_idxs, negs), axis=1)
 
-    fullranks = np.zeros(seqs.shape[0])
+    if args.save_scores:
+        fullscores = np.zeros((seqs.shape[0], 101))
+    else:
+        fullranks = np.zeros(seqs.shape[0])
     for i in range(seqs.shape[0]//1000+1):
         inds = np.arange(1000*i, min(1000*(i+1), seqs.shape[0]))
-        # pdb.set_trace()
         predictions = -model.predict(*[np.array(seqs[inds]), np.array(item_idxs[inds])])
-        fullranks[inds] = predictions.argsort(axis=1).argsort(axis=1)[:, 0].to('cpu')
+        if args.save_scores:
+            fullscores[inds] = -predictions.cpu().detach().numpy()
+        else:
+            fullranks[inds] = predictions.argsort(axis=1).argsort(axis=1)[:, 0].to('cpu')
+    if args.save_scores:
+        np.savetxt('/'.join(args.state_dict_path.split('/')[:-1]) + '/preds.txt', fullscores)
+        sys.exit()
     return fullranks, np.array(list(usernegs.keys()))[cond]
 
 

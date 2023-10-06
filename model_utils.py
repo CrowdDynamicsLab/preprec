@@ -119,9 +119,8 @@ class CausalMultiHeadAttention(torch.nn.Module):
             -(2**32) + 1
         )  # -1e23 # float('-inf')
         paddings = paddings.to(self.dev)
-        attn_weights = torch.where(
-            attn_mask, paddings, attn_weights
-        )  # enforcing causality
+        attn_weights = torch.where(time_mask, paddings, attn_weights)  # remove empty sequence
+        attn_weights = torch.where(attn_mask, paddings, attn_weights)  # enforcing causality
 
         attn_weights = self.softmax(attn_weights)
         attn_weights = self.dropout(attn_weights)
@@ -282,7 +281,7 @@ class UserActivityEncoding(torch.nn.Module):
 
 
 class PopularityEncoding(torch.nn.Module):
-    def __init__(self, args):
+    def __init__(self, args, second):
         super(PopularityEncoding, self).__init__()
         n_position = args.maxlen
         d_hid = args.hidden_units
@@ -291,8 +290,12 @@ class PopularityEncoding(torch.nn.Module):
         self.base_dim1 = args.base_dim1
         self.base_dim2 = args.base_dim2
         # table of fixed feature vectors for items by time, shape: (num_times*base_dim, num_items)
-        month_pop = np.loadtxt(f"../data/{args.dataset}_{args.monthpop}.txt")
-        week_pop = np.loadtxt(f"../data/{args.dataset}_{args.weekpop}.txt")
+        if not second:
+            month_pop = np.loadtxt(f"../data/{args.dataset}_{args.monthpop}.txt")
+            week_pop = np.loadtxt(f"../data/{args.dataset}_{args.weekpop}.txt")
+        else:
+            month_pop = np.loadtxt(f"../data/{args.dataset2}_{args.monthpop}.txt")
+            week_pop = np.loadtxt(f"../data/{args.dataset2}_{args.weekpop}.txt")
         # add zeros for the index-0 empty item placeholder and initial time period
         self.register_buffer(
             "month_pop_table",
@@ -364,3 +367,98 @@ class PopularityEncoding(torch.nn.Module):
             (log_seqs.shape[0], log_seqs.shape[1], self.input2),
         )
         return torch.cat((month_pop, week_pop), 2).clone().detach()
+
+
+class EvalPopularityEncoding(torch.nn.Module):
+    def __init__(self, args):
+        super(EvalPopularityEncoding, self).__init__()
+        n_position = args.maxlen
+        d_hid = args.hidden_units
+        self.input1 = args.input_units1
+        self.input2 = args.input_units2
+        self.base_dim1 = args.base_dim1
+        self.base_dim2 = args.base_dim2
+        # table of fixed feature vectors for items by time, shape: (num_times*base_dim, num_items)
+        month_pop = np.loadtxt(f"../data/{args.dataset}_{args.monthpop}.txt")
+        week_pop = np.loadtxt(f"../data/{args.dataset}_{args.weekpop}.txt")
+        week_eval_pop = np.loadtxt(f"../data/{args.dataset}_{args.week_eval_pop}.txt")
+        self.register_buffer("week_eval_pop", torch.FloatTensor(week_eval_pop))
+        # add zeros for the index-0 empty item placeholder and initial time period
+        self.register_buffer(
+            "month_pop_table",
+            torch.cat(
+                (
+                    torch.zeros((month_pop.shape[0] + self.input1 - self.base_dim1, 1)),
+                    torch.cat(
+                        (
+                            torch.zeros(
+                                (self.input1 - self.base_dim1, month_pop.shape[1])
+                            ),
+                            torch.FloatTensor(month_pop),
+                        ),
+                        dim=0,
+                    ),
+                ),
+                dim=1,
+            ),
+        )
+        self.register_buffer(
+            "week_pop_table",
+            torch.cat(
+                (
+                    torch.zeros((week_pop.shape[0] + self.input2 - self.base_dim2, 1)),
+                    torch.cat(
+                        (
+                            torch.zeros(
+                                (self.input2 - self.base_dim2, week_pop.shape[1])
+                            ),
+                            torch.FloatTensor(week_pop),
+                        ),
+                        dim=0,
+                    ),
+                ),
+                dim=1,
+            ),
+        )
+
+    def forward(self, log_seqs, time1_seqs, time2_seqs, user):
+        month_table_rows = torch.flatten(
+            torch.flatten(torch.LongTensor(time1_seqs)).reshape((-1, 1))
+            * self.base_dim1
+            + torch.arange(self.input1)
+        )
+        month_table_cols = torch.repeat_interleave(
+            torch.flatten(torch.LongTensor(log_seqs)), self.input1
+        )
+        if self.input2 > self.base_dim2:
+            week_table_rows = torch.flatten(
+                torch.flatten(torch.LongTensor(time2_seqs)).reshape((-1, 1))
+                * self.base_dim2
+                + torch.arange(self.input2 - self.base_dim2)
+            )
+            week_table_cols = torch.repeat_interleave(
+                torch.flatten(torch.LongTensor(log_seqs)), self.input2
+            )
+            if (torch.max(week_table_rows) >= self.week_pop_table.shape[0] or torch.max(week_table_cols) >= self.week_pop_table.shape[1]):
+                raise IndexError("row or column accessed out-of-index in popularity table")
+
+        if (
+            torch.max(month_table_rows) >= self.month_pop_table.shape[0]
+            or torch.max(month_table_cols) >= self.month_pop_table.shape[1]
+        ):
+            raise IndexError("row or column accessed out-of-index in popularity table")
+        month_pop = torch.reshape(
+            self.month_pop_table[month_table_rows, month_table_cols],
+            (log_seqs.shape[0], log_seqs.shape[1], self.input1),
+        )
+
+        week_eval_rows = torch.flatten((torch.LongTensor(user-1)*self.base_dim2).unsqueeze(1) + torch.arange(self.base_dim2))
+        recent_pop = torch.swapaxes(self.week_eval_pop[week_eval_rows].reshape((len(user), 6, -1)), 1, 2)
+        if self.input2 > self.base_dim2:
+            week_pop = torch.reshape(
+                self.week_pop_table[week_table_rows, week_table_cols],
+                (log_seqs.shape[0], log_seqs.shape[1], self.input2),
+            )
+            return torch.cat((month_pop, week_pop, recent_pop), 2).clone().detach()
+        else:
+            return torch.cat((month_pop, recent_pop), 2).clone().detach()

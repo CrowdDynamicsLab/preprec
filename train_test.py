@@ -23,6 +23,7 @@ def train_test(args, sampler, num_batch, model, dataset, epoch_start_idx, write,
     T = 0.0
     t0 = time.time()
 
+    # add regularization
     if args.triplet_loss or args.cos_loss:
         user_feat = np.loadtxt(f"../data/{args.dataset}_{args.reg_file}.txt")
 
@@ -35,6 +36,7 @@ def train_test(args, sampler, num_batch, model, dataset, epoch_start_idx, write,
         if args.model == "sasrec":
             bce_criterion = torch.nn.BCEWithLogitsLoss()
             for step in range(num_batch):
+                # get batch data
                 u, seq, pos, neg = sampler.next_batch()
                 u, seq, pos, neg = (
                     np.array(u),
@@ -42,41 +44,43 @@ def train_test(args, sampler, num_batch, model, dataset, epoch_start_idx, write,
                     np.array(pos),
                     np.array(neg),
                 )
+                # model output
                 pos_logits, neg_logits = model(seq, pos, neg)
                 pos_labels, neg_labels = torch.ones(
                     pos_logits.shape, device=args.device
                 ), torch.zeros(neg_logits.shape, device=args.device)
                 adam_optimizer.zero_grad()
                 indices = np.where(pos != 0)
+                # loss function 
                 loss = bce_criterion(pos_logits[indices], pos_labels[indices])
                 loss += bce_criterion(neg_logits[indices], neg_labels[indices])
                 for param in model.item_emb.parameters():
                     loss += args.l2_emb * torch.norm(param)
                 loss.backward()
                 adam_optimizer.step()
-                print(
-                    "loss in epoch {} iteration {}: {}".format(epoch, step, loss.item())
-                )
+                print("loss in epoch {} iteration {}: {}".format(epoch, step, loss.item()))
 
         elif args.model == "bert4rec":
             ce = torch.nn.CrossEntropyLoss(ignore_index=0)
             for step in range(num_batch):
+                # get batch data
                 seqs, labels = sampler.next_batch()
                 seqs, labels = torch.LongTensor(seqs), torch.LongTensor(labels).to(
                     args.device
                 ).view(-1)
+                # model output
                 logits = model(seqs)
                 adam_optimizer.zero_grad()
+                # loss function 
                 loss = ce(logits, labels)
                 loss.backward()
                 adam_optimizer.step()
-                print(
-                    "loss in epoch {} iteration {}: {}".format(epoch, step, loss.item())
-                )
+                print("loss in epoch {} iteration {}: {}".format(epoch, step, loss.item()))
 
         elif args.model == "newrec":
             bce_criterion = torch.nn.BCEWithLogitsLoss()
-            for step in range(num_batch):
+            for step in range(int(num_batch*args.fs_prop)):
+                # batch data based on if relative time encodings are used
                 if not args.time_embed:
                     u, seq, time1, time2, pos, neg = sampler.next_batch()
                     u, seq, time1, time2, pos, neg = (np.array(u), np.array(seq), np.array(time1), np.array(time2), np.array(pos), np.array(neg))
@@ -84,8 +88,8 @@ def train_test(args, sampler, num_batch, model, dataset, epoch_start_idx, write,
                 else:
                     u, seq, time1, time2, time_embed, pos, neg = sampler.next_batch()
                     u, seq, time1, time2, time_embed, pos, neg = (np.array(u), np.array(seq), np.array(time1), np.array(time2), np.array(time_embed), np.array(pos), np.array(neg))
+                # find closest and furthest user pairs within sample for regularization
                 if args.triplet_loss or args.cos_loss:
-                    # find closest and furthest user pairs within sample for regularization
                     batch_dist = distance_matrix(user_feat.T[u - 1], user_feat.T[u - 1])
                     pos_user = np.argpartition(batch_dist, args.reg_num)[
                         :, : args.reg_num
@@ -96,6 +100,7 @@ def train_test(args, sampler, num_batch, model, dataset, epoch_start_idx, write,
                 else:
                     pos_user = np.array([])
                     neg_user = np.array([])
+                # model output 
                 pos_logits, neg_logits, embed, pos_embed, neg_embed = model(
                     u, seq, time1, time2, time_embed, pos, neg, pos_user, neg_user
                 )
@@ -103,6 +108,7 @@ def train_test(args, sampler, num_batch, model, dataset, epoch_start_idx, write,
                     pos_logits.shape, device=args.device
                 ), torch.zeros(neg_logits.shape, device=args.device)
                 adam_optimizer.zero_grad()
+                # loss function, split into regularization and BCE
                 loss = 0
                 if args.only_reg:
                     bceloss = 0
@@ -122,23 +128,24 @@ def train_test(args, sampler, num_batch, model, dataset, epoch_start_idx, write,
                     )
                 )
 
+            # repeat above for newrec if second dataset is concurrently trained
             if second:
-                model1_dict = {k: v for k, v in model.state_dict().items() if k not in ["popularity_enc.month_pop_table", "popularity_enc.week_pop_table", "position_enc.pos_table", "user_enc.act_table"]}
+                # transfer updated parameters from first to second models
+                model1_dict = {k: v for k, v in model.state_dict().items() if k not in ["popularity_enc.month_pop_table", 
+                    "popularity_enc.week_pop_table", "position_enc.pos_table", "user_enc.act_table"]}
                 model2_dict = model2.state_dict()
                 model2_dict.update(model1_dict)
                 model2.load_state_dict(model2_dict)
                 for step in range(num_batch):
-                    u, seq, time1, time2, pos, neg = sampler.next_batch()
-                    u, seq, time1, time2, pos, neg = (
-                        np.array(u),
-                        np.array(seq),
-                        np.array(time1),
-                        np.array(time2),
-                        np.array(pos),
-                        np.array(neg),
-                    )
-                    pos_logits, neg_logits, embed, pos_embed, neg_embed = model(
-                        u, seq, time1, time2, pos, neg, np.array([]), np.array([])
+                    if not args.time_embed:
+                        u, seq, time1, time2, pos, neg = sampler2.next_batch()
+                        u, seq, time1, time2, pos, neg = (np.array(u), np.array(seq), np.array(time1), np.array(time2), np.array(pos), np.array(neg))
+                        time_embed = None
+                    else:
+                        u, seq, time1, time2, time_embed, pos, neg = sampler2.next_batch()
+                        u, seq, time1, time2, time_embed, pos, neg = (np.array(u), np.array(seq), np.array(time1), np.array(time2), np.array(time_embed), np.array(pos), np.array(neg))
+                    pos_logits, neg_logits, embed, pos_embed, neg_embed = model2(
+                        u, seq, time1, time2, time_embed, pos, neg, np.array([]), np.array([])
                     )
                     pos_labels, neg_labels = torch.ones(
                         pos_logits.shape, device=args.device
@@ -156,6 +163,7 @@ def train_test(args, sampler, num_batch, model, dataset, epoch_start_idx, write,
                             epoch, step, bceloss, loss.item() - bceloss
                         )
                     )
+                # transfer updated parameters from second to first models
                 model2_dict = {k: v for k, v in model2.state_dict().items() if k not in ["popularity_enc.month_pop_table", "popularity_enc.week_pop_table", "position_enc.pos_table", "user_enc.act_table"]}
                 model1_dict = model.state_dict()
                 model1_dict.update(model2_dict)
@@ -165,6 +173,7 @@ def train_test(args, sampler, num_batch, model, dataset, epoch_start_idx, write,
         elif args.model == "newb4rec":
             ce = torch.nn.CrossEntropyLoss(ignore_index=0)
             for step in range(num_batch):
+                # get batch data
                 seqs, labels, t1, t2 = sampler.next_batch()
                 seqs, labels, t1, t2 = (
                     np.array(seqs),
@@ -172,9 +181,10 @@ def train_test(args, sampler, num_batch, model, dataset, epoch_start_idx, write,
                     np.array(t1),
                     np.array(t2),
                 )
+                # model output
                 logits = model(seqs, t1, t2)
                 adam_optimizer.zero_grad()
-                # labels are all shifted to last entry
+                # loss function 
                 loss = ce(
                     logits[labels != 0],
                     torch.full(labels[labels != 0].shape, logits.shape[1] - 1).to(
@@ -183,39 +193,39 @@ def train_test(args, sampler, num_batch, model, dataset, epoch_start_idx, write,
                 )
                 loss.backward()
                 adam_optimizer.step()
-                print(
-                    "loss in epoch {} iteration {}: {}".format(epoch, step, loss.item())
-                )
+                print("loss in epoch {} iteration {}: {}".format(epoch, step, loss.item()))
 
         elif args.model == "bprmf":
             for step in range(num_batch):
+                # get batch data
                 u, pos, neg = sampler.next_batch()
                 u, pos, neg = np.array(u), np.array(pos), np.array(neg)
+                # model output
                 pos_logits, neg_logits = model(u, pos, neg)
                 adam_optimizer.zero_grad()
                 indices = np.where(pos != 0)
-                loss = (
-                    -(pos_logits[indices] - neg_logits[indices]).sigmoid().log().sum()
-                )
+                # loss function
+                loss = (-(pos_logits[indices] - neg_logits[indices]).sigmoid().log().sum())
                 loss.backward()
                 adam_optimizer.step()
-                print(
-                    "loss in epoch {} iteration {}: {}".format(epoch, step, loss.item())
-                )
+                print("loss in epoch {} iteration {}: {}".format(epoch, step, loss.item()))
 
+        # validation and check early stopping 
         if epoch % args.epoch_test == 0:
             t1 = time.time() - t0
             T += t1
             t0 = time.time()
+            # get validaiton results
             model.eval()
-            t_valid = evaluate(model, dataset, args, "valid", usernegs)
+            mode = "valid" if not args.sparse else "test"
+            t_valid = evaluate(model, dataset, args, mode, usernegs)
             model.train()
             ndcg, hr = t_valid[0][0], t_valid[0][1]
             f.write(f"epoch:{epoch}, time: {T} (NDCG@{args.topk[0]}: {ndcg}, HR@{args.topk[0]}: {hr})" + "\n")
             f.flush()
             if second:
                 model2.eval()
-                t_valid2 = evaluate(model2, dataset2, args, "valid", usernegs2, True)
+                t_valid2 = evaluate(model2, dataset2, args, mode, usernegs2, True)
                 model2.train()
                 ndcg2, hr2 = t_valid2[0][0], t_valid2[0][1]
                 f.write(f"epoch:{epoch}, time: {T}, dataset 2: (NDCG@{args.topk[0]}: {ndcg2}, HR@{args.topk[0]}: {hr2})" + "\n")
@@ -232,6 +242,7 @@ def train_test(args, sampler, num_batch, model, dataset, epoch_start_idx, write,
             else:
                 stop_early += 1
 
+        # stop if 5 consecutive validations without improving ndcg
         if stop_early == 5:
             break
     
@@ -239,8 +250,10 @@ def train_test(args, sampler, num_batch, model, dataset, epoch_start_idx, write,
         fname = "best.pth"
         torch.save(best_state, os.path.join(write, fname))
 
+    # testing
     if args.inference_only or not args.train_only:
         model.eval()
+        # if we've trained, used best training parameters
         if not args.inference_only:
             model_dict = model.state_dict()
             model_dict.update(best_state)
@@ -253,7 +266,6 @@ def train_test(args, sampler, num_batch, model, dataset, epoch_start_idx, write,
                 t_test[i][0] = (t_test[i][0] + t_test2[i][0])/2
                 t_test[i][1] = (t_test[i][1] + t_test2[i][1])/2
         for i, k in enumerate(args.topk):
-            #print(f"NDCG@{k}: {t_test[i][0]}, HR@{k}: {t_test[i][1]}")
             f.write(f"NDCG@{k}: {t_test[i][0]}, HR@{k}: {t_test[i][1]} \n")
             f.flush()
 
