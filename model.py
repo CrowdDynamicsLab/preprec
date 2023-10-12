@@ -28,6 +28,7 @@ class NewRec(torch.nn.Module):
         self.maxlen = args.maxlen
 
         # takes in item id, outputs pre-processed time-sensitive item popularity
+        # pdb.set_trace()
         self.popularity_enc = PopularityEncoding(args, second)
         # modify item popularity within most recent week in testing
         self.use_week_eval = args.use_week_eval

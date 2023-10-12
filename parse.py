@@ -76,9 +76,11 @@ def parse():
     parser.add_argument('--use_score_dir', default='', type=str, help='dir for use saved scores')
     parser.add_argument('--alphas', nargs='+', default=[0.2, 0.4, 0.5, 0.6, 0.8], type=float, help='use saved scores')
     parser.add_argument('--pause_size', action='store_true', help='pause to check size')
-    parser.add_argument('--sparse', action='store_true', help='pause to check size')
+    parser.add_argument('--sparse', action='store_true', help='if sparse dataset is being run')
+    parser.add_argument('--sparse_name', default='sparse_', type=str, help='name of sparse dataset being run')
     parser.add_argument('--save_ranks', action='store_true', help='save user prediction ranks and exit')
     parser.add_argument('--ranks_name', default='ranks', type=str, help='file name that save_ranks goes to')
+    parser.add_argument('--temp', action='store_true', help='temporary pause')
 
     args = parser.parse_args()
     return args

@@ -11,7 +11,7 @@ from scipy.stats import rankdata, percentileofscore
 
 
 
-def data_partition_wtime(fname, maxlen, sparse=False):
+def data_partition_wtime(fname, maxlen, sparse_name = ''):
     """
     dataset pre-processing that uses coarse time index, fine time index, and relative time embedding via exact timestamp
     refer to data/data.py for dataset formatting
@@ -24,10 +24,7 @@ def data_partition_wtime(fname, maxlen, sparse=False):
     user_train = ({}, {}, {}, {})
     user_valid = ({}, {}, {}, {})
     user_test = ({}, {}, {}, {})
-    if sparse:
-        f = open(f"../data/{fname}_sparse_intwtime.csv", "r")
-    else:
-        f = open(f"../data/{fname}_intwtime.csv", "r")
+    f = open(f"../data/{fname}_{sparse_name}intwtime.csv", "r")
     for line in f:
         u, i, t, t2, te = line.rstrip().split(",")
         u = int(u) + 1
@@ -46,7 +43,7 @@ def data_partition_wtime(fname, maxlen, sparse=False):
         nfeedback = len(User[0][user])
         uselen = min(maxlen+2, len(User[3][user]))
         temp = np.array(User[3][user][-uselen+1:]) - np.array(User[3][user][-uselen:-1])
-        if not sparse:
+        if sparse_name == '':
             user_train[0][user] = User[0][user][-maxlen-3:-2]
             user_train[1][user] = User[1][user][-maxlen-3:-2]
             user_train[2][user] = User[2][user][-maxlen-3:-2]
@@ -78,7 +75,7 @@ def data_partition_wtime(fname, maxlen, sparse=False):
 
 
 
-def data_partition(fname, maxlen, sparse=False):
+def data_partition(fname, maxlen, sparse_name = ''):
     """
     dataset pre-processing that uses coarse time index and fine time index
     refer to data/data.py for dataset formatting
@@ -91,13 +88,16 @@ def data_partition(fname, maxlen, sparse=False):
     user_train = ({}, {}, {})
     user_valid = ({}, {}, {})
     user_test = ({}, {}, {})
-    if sparse:
-        f = open(f"../data/{fname}_sparse_int2.csv", "r")
+    if sparse_name != '':
+        f = open(f"../data/{fname}_{sparse_name}intwtime.csv", "r")
     else:
         f = open(f"../data/{fname}_int2.csv", "r")
     
     for line in f:
-        u, i, t, t2 = line.rstrip().split(",")
+        if sparse:
+            u, i, t, t2, _ = line.rstrip().split(",")
+        else:
+            u, i, t, t2 = line.rstrip().split(",")
         u = int(u) + 1
         i = int(i) + 1
         t = int(t)
@@ -126,7 +126,7 @@ def data_partition(fname, maxlen, sparse=False):
 
 
 
-def data_partition2(fname):
+def data_partition2(fname, sparse_name):
     """
     dataset pre-processing without time 
     refer to data/data.py for dataset formatting
@@ -138,7 +138,10 @@ def data_partition2(fname):
     user_train = {}
     user_valid = {}
     user_test = {}
-    f = open(f"../data/{fname}_int2.csv", "r")
+    if sparse_name != '':
+        f = open(f"../data/{fname}_{sparse_name}intwtime.csv", "r")
+    else:
+        f = open(f"../data/{fname}_int2.csv", "r")
     for line in f:
         u, i = line.rstrip().split(",")[0:2]
         u = int(u) + 1

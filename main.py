@@ -35,9 +35,9 @@ f.close()
 
 # for sparse dataset run
 if args.sparse:
-    args.monthpop = "sparse_" + args.monthpop
-    args.weekpop = "sparse_" + args.weekpop
-    args.week_eval_pop = "sparse_" + args.week_eval_pop
+    args.monthpop = args.sparse_name + args.monthpop
+    args.weekpop = args.sparse_name + args.weekpop
+    args.week_eval_pop = args.sparse_name + args.week_eval_pop
 
 torch.manual_seed(args.seed)
 random.seed(args.seed)
@@ -49,27 +49,27 @@ use_time = ["newrec", "newb4rec", "mostpop"]
 # pull data 
 second = False 
 if args.model in no_use_time:
-    dataset = data_partition2(args.dataset)
+    dataset = data_partition2(args.dataset, args.sparse_name if args.sparse else '')
     [user_train, user_valid, user_test, usernum, itemnum] = dataset
 elif args.model in use_time:
     if args.time_embed:
-        dataset = data_partition_wtime(args.dataset, args.maxlen, sparse=args.sparse)
+        dataset = data_partition_wtime(args.dataset, args.maxlen, args.sparse_name if args.sparse else '')
     else:
-        dataset = data_partition(args.dataset, args.maxlen, sparse=args.sparse)
+        dataset = data_partition(args.dataset, args.maxlen, args.sparse_name if args.sparse else '')
     [user_train, user_valid, user_test, usernum, itemnum] = dataset
     if args.dataset2 != "":
-        dataset2 = data_partition(args.dataset2, args.maxlen, sparse=args.sparse)
+        dataset2 = data_partition(args.dataset2, args.maxlen, args.sparse_name if args.sparse else '')
         [user_train2, user_valid2, user_test2, usernum2, itemnum2] = dataset2
         second = True
 
 # randomly fix negative test samples
-mod = '' if not args.sparse else '_sparse'
+mod = args.sparse_name if args.sparse else ''
 if args.save_neg:
     setup_negatives(dataset, args.dataset, mod)
-with open(f"../data/{args.dataset}{mod}_userneg.pickle", 'rb') as handle:
+with open(f"../data/{args.dataset}_{mod}userneg.pickle", 'rb') as handle:
     usernegs = pickle.load(handle)
 if second:
-    with open(f"../data/{args.dataset2}{mod}_userneg.pickle", 'rb') as handle:
+    with open(f"../data/{args.dataset2}_{mod}userneg.pickle", 'rb') as handle:
         usernegs2 = pickle.load(handle)
 
 print(f"done loading data for {args.dataset}!")
@@ -138,31 +138,29 @@ epoch_start_idx = 1
 if args.state_dict_path is not None:
     try:
         # for newrec model only
-        if args.transfer or args.fs_transfer:  
-            loaded = torch.load(
-                args.state_dict_path, map_location=torch.device(args.device)
-            )
-            # preprocessing specific to each dataset isn't transferred
-            loaded = {k: v for k, v in loaded.items() if k not in ["popularity_enc.month_pop_table", 
-                "popularity_enc.week_pop_table", "position_enc.pos_table", "user_enc.act_table", "time_position_enc.pos_table", 
-                "eval_popularity_enc.week_eval_pop", "eval_popularity_enc.month_pop_table", "eval_popularity_enc.week_pop_table"]}
-            model_dict = model.state_dict()
-            model_dict.update(loaded)
-            model.load_state_dict(model_dict)
-            if args.transfer:
-                args.inference_only = True
-            if args.fs_transfer:
-                args.num_epochs = args.fs_num_epochs
-        else:
-            model.load_state_dict(
-                torch.load(
-                    args.state_dict_path, map_location=torch.device(args.device)
-                ),
-                strict=False,
-            )
+        loaded = torch.load(
+            args.state_dict_path, map_location=torch.device(args.device)
+        )
+        # preprocessing specific to each dataset isn't transferred
+        loaded = {k: v for k, v in loaded.items() if k not in ["popularity_enc.month_pop_table", 
+            "popularity_enc.week_pop_table", "position_enc.pos_table", "user_enc.act_table", "time_position_enc.pos_table", 
+            "eval_popularity_enc.week_eval_pop", "eval_popularity_enc.month_pop_table", "eval_popularity_enc.week_pop_table"]}
+        model_dict = model.state_dict()
+        model_dict.update(loaded)
+        model.load_state_dict(model_dict)
+        if args.transfer:
+            args.inference_only = True
+        if args.fs_transfer:
+            args.num_epochs = args.fs_num_epochs
+        
         print("done loading model")
     except:
         raise ValueError("loading state dict failed")
+
+if args.pause_size:
+    print(sum(p.numel() for p in model.parameters()))
+    sys.exit()
+    
 
 if not second:
     sampler2 = None

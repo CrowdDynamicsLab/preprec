@@ -12,6 +12,7 @@ import argparse
 from sklearn.utils.extmath import randomized_svd
 from sklearn.preprocessing import normalize
 from scipy.sparse import csr_matrix
+import sys
 
 def filter_g_k_one(data,k=10,u_name='user_id',i_name='business_id',y_name='stars'):
     item_group = data.groupby(i_name).agg({y_name:'count'})
@@ -75,6 +76,9 @@ def position_encoding_basis2(perc):
 parser = argparse.ArgumentParser()
 parser.add_argument('--dataset', default='../../data/amazon/amazon_office', type=str)
 parser.add_argument('--sparse', action='store_true')
+parser.add_argument('--sparse_val', default=100, type=int)
+parser.add_argument('--weight', default=0.5, type=float)
+parser.add_argument('--name', default='wt', type=str)
 args = parser.parse_args()
 dataset = args.dataset
 
@@ -85,13 +89,13 @@ ao = ao.drop_duplicates(['item', 'user'])
 # k-core filtering
 ao = filter_tot(ao,k=5,u_name='user',i_name='item',y_name='rate')
 # sparse scenario
-name = ''
+sparse = ''
 if args.sparse:
     ao.sort_values(['time'], inplace=True)
-    train_filt = ao.groupby('user').apply(lambda x: x.iloc[np.random.choice(len(x)-1, max(2, int(0.2*(len(x)-1))), replace=False)])
+    train_filt = ao.groupby('user').apply(lambda x: x.iloc[-max(3, int(args.sparse_val/100.0*(len(x)-1))):])
     test = ao.groupby('user').last()
     ao = pd.concat([train_filt.reset_index(drop=True), test.reset_index()], axis=0)
-    name = '_sparse'
+    sparse = f"_sparse_{args.sparse_val}"
 # user, item ids
 item_map = dict(zip(sorted(ao.item.unique()), range(len(ao.item.unique()))))
 ao.item = ao.item.apply(lambda x: item_map[x])
@@ -107,9 +111,9 @@ ao['time5'] = ao.time2.dt.year*10000 + ao.time2.dt.month*100 + ao.time2.dt.isoca
 var_map = dict(zip(sorted(ao['time5'].unique()), range(len(ao['time5'].unique()))))
 ao['time6'] = ao['time5'].apply(lambda x: var_map[x])
 # interaction matrix processed by model with time embedding
-ao.sort_values(['time2'])[['user', 'item', 'time4', 'time6', 'time']].drop_duplicates().to_csv(f'{dataset}{name}_intwtime.csv', header=False, index=False)
+ao.sort_values(['time2'])[['user', 'item', 'time4', 'time6', 'time']].drop_duplicates().to_csv(f'{dataset}{sparse}_intwtime.csv', header=False, index=False)
 # interaction matrix processed by model without time embedding
-ao.sort_values(['time2'])[['user', 'item', 'time4', 'time6']].drop_duplicates().to_csv(f'{dataset}{name}_int2.csv', header=False, index=False)
+ao.sort_values(['time2'])[['user', 'item', 'time4', 'time6']].drop_duplicates().to_csv(f'{dataset}{sparse}_int2.csv', header=False, index=False)
 print("saved interaction matrix")
 
 # 3 potential ways to compute popularity over time: just current period, cumulative over periods, exponential weighted average over periods
@@ -141,7 +145,7 @@ grouped = ao.groupby('time4')
 ototaldft3 = pd.DataFrame(columns=["time4", "item", "perc"])
 counter = Counter()
 for i, ints in grouped:
-    counter = Counter({k:0.5*v for k,v in counter.items()})
+    counter = Counter({k:args.weight*v for k,v in counter.items()})
     counter.update(ints.item)
     vals = list(counter.values())
     percs = 100 * rankdata(vals, "average") / len(vals)
@@ -150,30 +154,30 @@ for i, ints in grouped:
     df = pd.DataFrame({"time4": [i for _ in range(len(items))], "item": item_orders + left, "perc": np.concatenate((percs, np.zeros(len(left))))})
     ototaldft3 = pd.concat([ototaldft3, df])
     
-# np.savetxt(f"{dataset}{name}_currpop.txt", ototaldft)
-# np.savetxt(f"{dataset}{name}_cumpop.txt", ototaldft2)
-np.savetxt(f"{dataset}{name}_wtpop.txt", ototaldft3)
+# np.savetxt(f"{dataset}{sparse}_currpop.txt", ototaldft)
+# np.savetxt(f"{dataset}{sparse}_cumpop.txt", ototaldft2)
+np.savetxt(f"{dataset}{sparse}_{args.name}pop.txt", ototaldft3)
 print("saved monthly popularity percentiles")
 
 # construct simple popularity feature based on each of 3 methods
 
 # otmp = ototaldft.pivot(index = 'time4', columns = 'item', values='perc')
 # otmp_ = otmp.apply(lambda x: list(itertools.chain.from_iterable([pop_embed(p) for p in x])))
-# np.savetxt(f"{dataset}{name}_currembed.txt", otmp_.values)
+# np.savetxt(f"{dataset}{sparse}_currembed.txt", otmp_.values)
 # otmp2 = ototaldft2.pivot(index = 'time4', columns = 'item', values='perc')
-# np.savetxt(f"{dataset}{name}_rawpop.txt", otmp2)
+# np.savetxt(f"{dataset}{sparse}_rawpop.txt", otmp2)
 # otmp2_ = otmp2.apply(lambda x: list(itertools.chain.from_iterable([pop_embed(p) for p in x])))
-# np.savetxt(f"{dataset}{name}_cumembed.txt", otmp2_.values)
+# np.savetxt(f"{dataset}{sparse}_cumembed.txt", otmp2_.values)
 otmp3 = ototaldft3.pivot(index = 'time4', columns = 'item', values='perc')
 otmp3_ = otmp3.apply(lambda x: list(itertools.chain.from_iterable([pop_embed(p) for p in x])))
-np.savetxt(f"{dataset}{name}_wtembed.txt", otmp3_.values)
+np.savetxt(f"{dataset}{sparse}_{args.name}embed.txt", otmp3_.values)
 
 # uncomment to test sinusoidal popularity features
 
 # otmp3_p = otmp3.apply(lambda x: list(itertools.chain.from_iterable([position_encoding(p) for p in x])))
-# np.savetxt(f"{dataset}{name}_wtembed_pos.txt", otmp3_p.values)
+# np.savetxt(f"{dataset}{sparse}_wtembed_pos.txt", otmp3_p.values)
 # otmp3_pb = otmp3.apply(lambda x: list(itertools.chain.from_iterable([position_encoding_basis(p) for p in x])))
-# np.savetxt(f"{dataset}{name}_wtembed_pos2.txt", otmp3_pb.values)
+# np.savetxt(f"{dataset}{sparse}_wtembed_pos2.txt", otmp3_pb.values)
 print("saved coarse popularity embeddings")
 
 # capture previous 4 weeks popularity (if we're at January 30th don't want to lose January 1-January 28 data)
@@ -200,12 +204,12 @@ for i, ints in grouped:
 # simple popularity feature w/ lower dimension to reduce time/space
 otmpw = ototaldftw.pivot(index = 'time6', columns = 'item', values='perc')
 otmpw_ = otmpw.apply(lambda x: list(itertools.chain.from_iterable([pop_embed2(p) for p in x])))
-np.savetxt(f"{dataset}{name}_week_embed2.txt", otmpw_.values)
+np.savetxt(f"{dataset}{sparse}_week_embed2.txt", otmpw_.values)
 # uncomment to test sinusoidal popularity features (w/ lower dimension for 2nd)
 # otmpw_p = otmpw.apply(lambda x: list(itertools.chain.from_iterable([position_encoding(p) for p in x])))
-# np.savetxt(f"{dataset}{name}_weekembed_pos.txt", otmp3_p.values)
+# np.savetxt(f"{dataset}{sparse}_weekembed_pos.txt", otmp3_p.values)
 # otmpw_pb = otmpw.apply(lambda x: list(itertools.chain.from_iterable([position_encoding_basis2(p) for p in x])))
-# np.savetxt(f"{dataset}{name}_weekembed_pos2.txt", otmp3_pb.values)
+# np.savetxt(f"{dataset}{sparse}_weekembed_pos2.txt", otmp3_pb.values)
 print("saved fine popularity embeddings")
 
 # uncomment for user activity features used in regularization loss
@@ -223,13 +227,13 @@ print("saved fine popularity embeddings")
 #     df = pd.DataFrame({"time4": [i for _ in range(len(users))], "user": user_orders + left, "perc": np.concatenate((percs, np.zeros(len(left))))})
 #     ototaldftd = pd.concat([ototaldftd, df])
 # otmpd = ototaldftd.pivot(index = 'time4', columns = 'user', values='perc')
-# np.savetxt(f"{dataset}{name}_userhist.txt", otmpd.values)
+# np.savetxt(f"{dataset}{sparse}_userhist.txt", otmpd.values)
 # print("saved user activity features")
 
 # uncomment for item-cooccurrence based feature
 
 # get count for all consecutive item-cooccurrences (wrt user, symmetric between before and after)
-# ints = pd.read_csv(f"{dataset}{name}_int2.csv", header=None)
+# ints = pd.read_csv(f"{dataset}{sparse}_int2.csv", header=None)
 # ints.columns = ["user", "item", "t1", "t2"]
 # num_items = len(pd.unique(ints['item']))
 # counter = Counter()
@@ -249,7 +253,7 @@ print("saved fine popularity embeddings")
 # final = np.zeros(((u*s).shape[0]+1, (u*s).shape[1]))
 # final[0, :] = 0
 # final[1:, :] = (u*s)
-# np.savetxt(f"{dataset}{name}_copca.txt", final)
+# np.savetxt(f"{dataset}{sparse}_copca.txt", final)
 # print("saved item coocurrence features")
 
 print("done!")

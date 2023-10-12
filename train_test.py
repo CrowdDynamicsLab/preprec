@@ -242,8 +242,8 @@ def train_test(args, sampler, num_batch, model, dataset, epoch_start_idx, write,
             else:
                 stop_early += 1
 
-        # stop if 5 consecutive validations without improving ndcg
-        if stop_early == 5:
+        # stop if 3 consecutive validations without improving ndcg
+        if stop_early == 3:
             break
     
     if best_ndcg != 0:
