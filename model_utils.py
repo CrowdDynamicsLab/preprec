@@ -67,6 +67,16 @@ class InitFeedForward2(torch.nn.Module):
         outputs = self.relu(self.fc1(inputs))
         return outputs
 
+class InitFeedForward3(torch.nn.Module):
+    def __init__(self, input_units, hidden_units):
+        super(InitFeedForward3, self).__init__()
+        self.fc = torch.nn.Linear(input_units, hidden_units)
+
+    def forward(self, inputs):
+        outputs = self.fc(inputs)
+        return outputs
+
+
 
 class Gate(torch.nn.Module):
     def __init__(self, hidden=50, dropout_rate=0):
@@ -357,7 +367,9 @@ class PopularityEncoding(torch.nn.Module):
             or torch.max(week_table_rows) >= self.week_pop_table.shape[0]
             or torch.max(week_table_cols) >= self.week_pop_table.shape[1]
         ):
-            raise IndexError("row or column accessed out-of-index in popularity table")
+            # week_table_rows[week_table_rows >= self.week_pop_table.shape[0]]
+            pdb.set_trace()
+            # raise IndexError("row or column accessed out-of-index in popularity table")
         month_pop = torch.reshape(
             self.month_pop_table[month_table_rows, month_table_cols],
             (log_seqs.shape[0], log_seqs.shape[1], self.input1),
@@ -378,6 +390,7 @@ class EvalPopularityEncoding(torch.nn.Module):
         self.input2 = args.input_units2
         self.base_dim1 = args.base_dim1
         self.base_dim2 = args.base_dim2
+        self.pause = args.pause
         # table of fixed feature vectors for items by time, shape: (num_times*base_dim, num_items)
         month_pop = np.loadtxt(f"../data/{args.dataset}_{args.monthpop}.txt")
         week_pop = np.loadtxt(f"../data/{args.dataset}_{args.weekpop}.txt")
@@ -437,7 +450,7 @@ class EvalPopularityEncoding(torch.nn.Module):
                 + torch.arange(self.input2 - self.base_dim2)
             )
             week_table_cols = torch.repeat_interleave(
-                torch.flatten(torch.LongTensor(log_seqs)), self.input2
+                torch.flatten(torch.LongTensor(log_seqs)), self.input2 - self.base_dim2
             )
             if (torch.max(week_table_rows) >= self.week_pop_table.shape[0] or torch.max(week_table_cols) >= self.week_pop_table.shape[1]):
                 raise IndexError("row or column accessed out-of-index in popularity table")
@@ -457,7 +470,7 @@ class EvalPopularityEncoding(torch.nn.Module):
         if self.input2 > self.base_dim2:
             week_pop = torch.reshape(
                 self.week_pop_table[week_table_rows, week_table_cols],
-                (log_seqs.shape[0], log_seqs.shape[1], self.input2),
+                (log_seqs.shape[0], log_seqs.shape[1], self.input2 - self.base_dim2),
             )
             return torch.cat((month_pop, week_pop, recent_pop), 2).clone().detach()
         else:

@@ -40,6 +40,15 @@ class NewRec(torch.nn.Module):
             args.hidden_units * 2,
             args.hidden_units,
         )
+        if args.fs_emb:
+            self.fs_layer = InitFeedForward(
+                args.hidden_units,
+                args.hidden_units * 2,
+                args.hidden_units,
+            )
+        elif args.fs_emb_2:
+            self.fs_layer = InitFeedForward3(args.hidden_units, args.hidden_units)
+        self.fs_emb = args.fs_emb or args.fs_emb_2
         # trainable positional embeddings
         if self.no_fixed_emb:
             self.pos_emb = torch.nn.Embedding(args.maxlen, args.hidden_units)
@@ -123,6 +132,8 @@ class NewRec(torch.nn.Module):
         # obtain popularity-based feature vectors for sequence history, apply embedding layer, add positional encoding
         seqs = self.popularity_enc(log_seqs, time1_seqs, time2_seqs)
         seqs = self.embed_layer(seqs)
+        if self.fs_emb:
+            seqs = self.fs_layer(seqs) 
         if self.no_fixed_emb:
             positions = np.tile(
                 np.array(range(log_seqs.shape[1])), [log_seqs.shape[0], 1]
@@ -273,6 +284,14 @@ class NewRec(torch.nn.Module):
         neg_logits = (full_feats * neg_embs).sum(dim=-1)
 
         return pos_logits, neg_logits, full_feats[:, -1, :], pos_embed, neg_embed
+
+    def user_score(self, log_seqs, time1_seqs, time2_seqs, time_embed, user):
+        log_feats =  self.log2feats(user, log_seqs, time1_seqs, time2_seqs, time_embed)
+        return log_feats[:, -1, :]
+
+    def handle_inference(self):
+        del self.popularity_enc
+        return
 
     def predict(
         self, log_seqs, time1_seqs, time2_seqs, time_embed, item_indices, time1_pred, time2_pred, user
@@ -443,7 +462,6 @@ class NewB4Rec(torch.nn.Module):
         final_feat = self.log2feats(seqs, time1_seqs, time2_seqs)  # B x T x V
         final_feat = self.GELU(final_feat)
         if candidates is not None:
-            # pdb.set_trace()
             items = candidates
             t1 = np.repeat(time1_seqs.flatten()[-1], candidates.shape)
             t2 = np.repeat(time2_seqs.flatten()[-1], candidates.shape)

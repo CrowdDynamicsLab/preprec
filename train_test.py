@@ -30,6 +30,12 @@ def train_test(args, sampler, num_batch, model, dataset, epoch_start_idx, write,
     best_ndcg = 0
     best_state = model.state_dict()
     stop_early = 0
+    if args.first_eval:
+        pdb.set_trace()
+        model.eval()
+        mode = "valid" if not args.sparse or args.override_sparse else "test"
+        t_valid = evaluate(model, dataset, args, mode, usernegs)
+        model.train()
     for epoch in range(epoch_start_idx, args.num_epochs + 1):
         if args.inference_only:
             break  # just to decrease identition
@@ -117,9 +123,9 @@ def train_test(args, sampler, num_batch, model, dataset, epoch_start_idx, write,
                     loss += bce_criterion(pos_logits[indices], pos_labels[indices])
                     loss += bce_criterion(neg_logits[indices], neg_labels[indices])
                     bceloss = loss.item()
-                loss += args.reg_coef * model.regloss(
-                    embed, pos_embed, neg_embed, args.triplet_loss, args.cos_loss
-                )
+                # loss += args.reg_coef * model.regloss(
+                #     embed, pos_embed, neg_embed, args.triplet_loss, args.cos_loss
+                # )
                 loss.backward()
                 adam_optimizer.step()
                 print(
@@ -215,10 +221,14 @@ def train_test(args, sampler, num_batch, model, dataset, epoch_start_idx, write,
             t1 = time.time() - t0
             T += t1
             t0 = time.time()
-            # get validaiton results
+            # get validation results
             model.eval()
-            mode = "valid" if not args.sparse else "test"
+            # model.popularity_enc = model.popularity_enc.to("cpu")
+            # model.eval_popularity_enc = model.eval_popularity_enc.to("cuda")
+            mode = "valid" if not args.sparse or args.override_sparse else "test"
             t_valid = evaluate(model, dataset, args, mode, usernegs)
+            # model.eval_popularity_enc = model.eval_popularity_enc.to("cpu")
+            # model.popularity_enc = model.popularity_enc.to("cuda")
             model.train()
             ndcg, hr = t_valid[0][0], t_valid[0][1]
             f.write(f"epoch:{epoch}, time: {T} (NDCG@{args.topk[0]}: {ndcg}, HR@{args.topk[0]}: {hr})" + "\n")
@@ -231,10 +241,10 @@ def train_test(args, sampler, num_batch, model, dataset, epoch_start_idx, write,
                 f.write(f"epoch:{epoch}, time: {T}, dataset 2: (NDCG@{args.topk[0]}: {ndcg2}, HR@{args.topk[0]}: {hr2})" + "\n")
                 f.flush()
                 ndcg = (ndcg + ndcg2)/2
-                hr = (hr + hr2)/2
 
             fname = f"epoch={epoch}.pth"
-            torch.save(model.state_dict(), os.path.join(write, fname))
+            if epoch % (3*args.epoch_test) == 0:
+                torch.save(model.state_dict(), os.path.join(write, fname))
             if ndcg > best_ndcg:
                 best_ndcg = ndcg
                 best_state = model.state_dict()
@@ -243,7 +253,7 @@ def train_test(args, sampler, num_batch, model, dataset, epoch_start_idx, write,
                 stop_early += 1
 
         # stop if 3 consecutive validations without improving ndcg
-        if stop_early == 3:
+        if stop_early == args.stop_early:
             break
     
     if best_ndcg != 0:
@@ -253,22 +263,29 @@ def train_test(args, sampler, num_batch, model, dataset, epoch_start_idx, write,
     # testing
     if args.inference_only or not args.train_only:
         model.eval()
+        # # model.popularity_enc = model.popularity_enc.to("cpu")
+        # model.handle_inference()
+        # model.eval_popularity_enc = model.eval_popularity_enc.to("cuda")
         # if we've trained, used best training parameters
         if not args.inference_only:
             model_dict = model.state_dict()
             model_dict.update(best_state)
             model.load_state_dict(model_dict)
         t_test = evaluate(model, dataset, args, "test", usernegs)
-        if second:
-            model2.eval()
-            t_test2 = evaluate(model2, dataset2, args, "test", usernegs2, True)
-            for i in range(len(args.topk)):
-                t_test[i][0] = (t_test[i][0] + t_test2[i][0])/2
-                t_test[i][1] = (t_test[i][1] + t_test2[i][1])/2
         for i, k in enumerate(args.topk):
             f.write(f"NDCG@{k}: {t_test[i][0]}, HR@{k}: {t_test[i][1]} \n")
             f.flush()
+        if second:
+            model2.eval()
+            # # model2.popularity_enc = model2.popularity_enc.to("cpu")
+            # model2.handle_inference()
+            # model2.eval_popularity_enc = model2.eval_popularity_enc.to("cpu")
+            t_test2 = evaluate(model2, dataset2, args, "test", usernegs2, True)
+            for i, k in enumerate(args.topk):
+                f.write(f"NDCG@{k}: {t_test2[i][0]}, HR@{k}: {t_test2[i][1]} \n")
+                f.flush()
 
     f.close()
-    sampler.close()
+    if sampler:
+        sampler.close()
     print("Done")
