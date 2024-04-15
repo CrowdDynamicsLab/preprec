@@ -39,21 +39,14 @@ def filter_tot(data,k=10,u_name='user_id',i_name='business_id',y_name='stars'):
             break
     return data_new
 
-def pop_embed(perc):
+def pop_embed(perc, num=10):
     if perc == 0:
-        return [0]*11
-    loc = int(perc//10)
-    if perc % 10 == 0:
-        return [0]*loc + [1] + [0]*(10 - loc)
-    return [0]*loc + [1 - (perc%10) / 10] + [(perc%10) / 10] + [0]*(9 - loc)
-
-def pop_embed2(perc):
-    if perc == 0:
-        return [0]*6
-    loc = int(perc//20)
-    if perc % 20 == 0:
-        return [0]*loc + [1] + [0]*(5 - loc)
-    return [0]*loc + [1 - (perc%20) / 20] + [(perc%20) / 20] + [0]*(4 - loc)
+        return [0]*(num+1)
+    rev = 100//num
+    loc = int(perc//num)
+    if perc % rev == 0:
+        return [0]*loc + [1] + [0]*(num - loc)
+    return [0]*loc + [1 - (perc%rev) / rev] + [(perc%rev) / rev] + [0]*(num - 1 - loc)
 
 def position_encoding(perc):
     position_enc = np.array([perc / np.power(10000, 2 * (j // 2) / 10) for j in range(10)])
@@ -86,7 +79,9 @@ parser.add_argument('--weight', default=0.5, type=float)
 parser.add_argument('--name', default='wt', type=str)
 parser.add_argument('--extra2', default='', type=str)
 parser.add_argument('--t1_cutoff', default=366/12, type=float)
+parser.add_argument('--t1_size', default=10, type=int)
 parser.add_argument('--t2_cutoff', default=366/62, type=float)
+parser.add_argument('--t2_size', default=5, type=int)
 parser.add_argument('--stop_early',  action='store_true')
 parser.add_argument('--week_adj',  action='store_true')
 parser.add_argument('--last_pop',  action='store_true')
@@ -190,7 +185,7 @@ if args.week_adj:
         urow[arr] += counts
         percs = 100 * rankdata(urow, "average") / len(urow)
         if args.mode2 == "orig":
-            df[6 * u:6 * u + 6] = np.array([pop_embed2(perc) for perc in percs[arr]]).T
+            df[(args.t2_size + 1) * u:(args.t2_size + 1) * u + (args.t2_size + 1)] = np.array([pop_embed(perc, args.t2_size) for perc in percs[arr]]).T
         elif args.mode2 == "sin":
             df[7 * u:7 * u + 7] = np.array([position_encoding_basis2(perc) for perc in percs[arr]]).T
     if args.mode2 == "orig":
@@ -233,7 +228,7 @@ if not args.not_coarse:
         counter = Counter({k:args.weight*v for k,v in counter.items()})
         counter.update(ints.item)
         vals = list(counter.values())
-        percs = 100 * rankdata(vals, "average") / len(vals)
+        percs = 100 - (100 * rankdata(vals, "average") / len(vals))
         item_orders = list(counter.keys())
         left = list(set(items) - set(item_orders))
         df = pd.DataFrame({"time4": [i for _ in range(len(items))], "item": item_orders + left, "perc": np.concatenate((percs, np.zeros(len(left))))})
@@ -247,15 +242,15 @@ if not args.not_coarse:
     # construct simple popularity feature based on each of 3 methods
 
     # otmp = ototaldft.pivot(index = 'time4', columns = 'item', values='perc')
-    # otmp_ = otmp.apply(lambda x: list(itertools.chain.from_iterable([pop_embed(p) for p in x])))
+    # otmp_ = otmp.apply(lambda x: list(itertools.chain.from_iterable([pop_embed(p, args.t1_size) for p in x])))
     # np.savetxt(f"{dataset}{sparse}_currembed.txt", otmp_.values)
     # otmp2 = ototaldft2.pivot(index = 'time4', columns = 'item', values='perc')
     # np.savetxt(f"{dataset}{sparse}_rawpop.txt", otmp2)
-    # otmp2_ = otmp2.apply(lambda x: list(itertools.chain.from_iterable([pop_embed(p) for p in x])))
+    # otmp2_ = otmp2.apply(lambda x: list(itertools.chain.from_iterable([pop_embed(p, args.t1_size) for p in x])))
     # np.savetxt(f"{dataset}{sparse}_cumembed.txt", otmp2_.values)
     otmp3 = ototaldft3.pivot(index = 'time4', columns = 'item', values='perc')
     if args.mode2 == "orig":
-        otmp3_ = otmp3.apply(lambda x: list(itertools.chain.from_iterable([pop_embed(p) for p in x])))
+        otmp3_ = otmp3.apply(lambda x: list(itertools.chain.from_iterable([pop_embed(p, args.t1_size) for p in x])))
         np.savetxt(f"{dataset}{sparse}_{args.name}embed{args.extra2}.txt", otmp3_.values)
     elif args.mode2 == "sin":
         otmp3_pb = otmp3.apply(lambda x: list(itertools.chain.from_iterable([position_encoding_basis(p) for p in x])))
@@ -274,7 +269,7 @@ if not args.not_fine:
             counter.subtract(prev4)
         counter.update(ints.item)
         vals = list(counter.values())
-        percs = 100 * rankdata(vals, "average") / len(vals)
+        percs = 100 - (100 * rankdata(vals, "average") / len(vals))
         item_orders = list(counter.keys())
         left = list(set(items) - set(item_orders))
         df = pd.DataFrame({"time6": [i for _ in range(len(items))], "item": item_orders + left, "perc": np.concatenate((percs, np.zeros(len(left)))), "vals": np.concatenate((vals, np.zeros(len(left))))})
@@ -291,7 +286,7 @@ if not args.not_fine:
     np.savetxt(f"{dataset}{sparse}_week_curr_raw{args.extra2}.txt", oraw.values)
     otmpw = ototaldftw.pivot(index = 'time6', columns = 'item', values='perc')
     if args.mode2 == "orig":
-        otmpw_ = otmpw.apply(lambda x: list(itertools.chain.from_iterable([pop_embed2(p) for p in x])))
+        otmpw_ = otmpw.apply(lambda x: list(itertools.chain.from_iterable([pop_embed(p, args.t2_size) for p in x])))
         np.savetxt(f"{dataset}{sparse}_week_embed2{args.extra2}.txt", otmpw_.values)
     elif args.mode2 == "sin":
         otmpw_pb = otmpw.apply(lambda x: list(itertools.chain.from_iterable([position_encoding_basis2(p) for p in x])))

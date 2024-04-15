@@ -22,7 +22,7 @@ def random_neq(l, r, s):
 
 
 def sample_function_newrec(
-    user_train, usernum, itemnum, batch_size, maxlen, mask_prob, result_queue, SEED, raw_feat_only
+    user_train, usernum, itemnum, batch_size, maxlen, mask_prob, result_queue, SEED
 ):
     def sample():
         user = np.random.randint(1, usernum + 1)
@@ -59,40 +59,30 @@ def sample_function_newrec(
             return (user, seq, time1, time2, time_embed, pos, neg)
         return (user, seq, time1, time2, pos, neg)
 
-    if args.raw_feat_only:
-        seq = np.array(user_train[0][user][:maxlen], dtype=np.int32)
-        time1 = np.array(user_train[1][user], dtype=np.int32)
-        time2 = np.array(user_train[2][user], dtype=np.int32)
-        if len(user_train) > 3:
-            time_embed = np.array(user_train[3][user], dtype=np.int32)
-        pos = np.zeros([maxlen], dtype=np.int32)
-        neg = np.zeros([maxlen], dtype=np.int32)
-        nxt = user_train[0][user][-1]
-        idx = maxlen - 1
-
-        ts = set(user_train[0][user])
-        for i in reversed(user_train[0][user][:-1]):
-            # seq[idx] = i[0]
-            # time1[idx] = i[1]
-            # time2[idx] = i[2]
-            pos[idx] = nxt
-            if nxt != 0:
-                neg[idx] = random_neq(1, itemnum + 1, ts)
-            nxt = i
-            idx -= 1
-            if idx == -1:
-                break
-
-        if len(user_train) > 3:
-            return (user, seq, time1, time2, time_embed, pos, neg)
-        return (user, seq, time1, time2, pos, neg)
-
     np.random.seed(SEED)
     while True:
         one_batch = []
         for i in range(batch_size):
             one_batch.append(sample())
         result_queue.put(zip(*one_batch))
+
+
+def sample_function_newrec_rfo(
+    user_comb, usernum, itemnum, batch_size, maxlen, result_queue, userpop,
+):
+    user_train, user_valid, user_test = user_comb
+    def sample(user):
+        if np.sum(np.array(user_train[0][user]) != 0) <= 1:
+            raise ValueError("Must have at least 2 items.")
+        seq = np.array(user_train[0][user] + [user_valid[0][user]] + [user_test[0][user]], dtype=np.int32)
+        time1 = np.array(user_train[1][user] + [user_valid[1][user]] + [user_test[1][user]], dtype=np.int32)
+        time2 = np.array(user_train[2][user] + [user_valid[2][user]] + [user_test[2][user]], dtype=np.int32)
+        return (user, seq, time1, time2)
+
+    one_batch = []
+    for i in range(batch_size):
+        one_batch.append(sample(userpop[i]))
+    result_queue.put(zip(*one_batch))
 
 
 def sample_function_sasrec(
@@ -262,16 +252,21 @@ class WarpSampler(object):
         n_workers=1,
         mask_prob=0,
         augment=False,
-        raw_feature_only=False
+        raw_feature_only=False,
+        misc=None,
     ):
         self.result_queue = Queue(maxsize=n_workers * 10)
         self.processors = []
 
         if raw_feature_only:
-            userint = np.loadtxt(f"../data/{args.dataset}_{args.userpop}.txt")
-            userpop = np.argsort(userint)
+            userint = misc
+            userpop = np.argsort(userint) + 1
+            print("USER INT LENGTH", len(userpop))
+            nworkers = int((len(userpop)) // batch_size)
+            self.result_queue = Queue(maxsize=nworkers)
+            chunks = [userpop[i * batch_size:(i + 1) * batch_size] for i in range(nworkers)]
             func = sample_function_newrec_rfo
-            for i in range(n_workers):
+            for i in range(nworkers):
                 self.processors.append(
                     Process(
                         target=func,
@@ -279,15 +274,16 @@ class WarpSampler(object):
                             User,
                             usernum,
                             itemnum,
+                            batch_size,
                             maxlen,
-                            raw_feature_only
                             self.result_queue,
-                            np.random.randint(2e9),
+                            chunks[i],
                         ),
                     )
                 )
                 self.processors[-1].daemon = True
                 self.processors[-1].start()
+            return
 
         if augment:
             usernum = len(User)

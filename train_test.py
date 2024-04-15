@@ -289,3 +289,23 @@ def train_test(args, sampler, num_batch, model, dataset, epoch_start_idx, write,
     if sampler:
         sampler.close()
     print("Done")
+
+
+def train_test_mock(args, sampler, num_batch, model):
+    try:
+        if not os.path.exists(f"../data/{args.dataset}/"):
+            os.makedirs(f"../data/{args.dataset}/")
+        label_path = f"../data/{args.dataset}_raw_feat_label.npy"
+        if os.path.exists(label_path):
+            os.remove(label_path)
+        np_batch = np.zeros((num_batch, args.batch_size), dtype=np.int32)
+        for step in range(int(num_batch)):
+            u, seq, time1, time2 = sampler.next_batch()
+            u, seq, time1, time2 = (np.array(u), np.array(seq), np.array(time1), np.array(time2))
+            pop_enc = model.raw(seq, time1, time2)
+            np.save(f"../data/{args.dataset}/raw_feat_{step}.npy", pop_enc)
+            np_batch[step] = np.count_nonzero(seq, axis=1)
+        np.save(label_path, np_batch)
+    except:
+        import pdb
+        pdb.set_trace()

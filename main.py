@@ -9,7 +9,7 @@ from parse import parse
 from model import SASRec, NewRec, NewB4Rec, BERT4Rec, BPRMF
 from utils import *
 from data import *
-from train_test import train_test
+from train_test import train_test, train_test_mock
 import pickle
 import psutil
 
@@ -104,21 +104,24 @@ sampler = None
 sampler2 = None
 if not args.inference_only:
     # positive (and negative if applicable) sampling for training
-    sampler = WarpSampler(user_train, usernum, itemnum, args.model, batch_size=args.batch_size, maxlen=args.maxlen,
-        n_workers=4, mask_prob=args.mask_prob, augment=args.augment) #os.cpu_count()
+    if args.raw_feat_only:
+        userint = np.loadtxt(f"../data/{args.dataset}_{args.userpop}.txt")[1:].astype(np.int32)
+        user_comb = (user_train, user_valid, user_test)
+    else:
+        userint = None
+        user_comb = user_train
+    sampler = WarpSampler(user_comb, usernum, itemnum, args.model, batch_size=args.batch_size, maxlen=args.maxlen,n_workers=int(os.cpu_count()/2), mask_prob=args.mask_prob, augment=args.augment, raw_feature_only=args.raw_feat_only, misc=userint)
     if second:
-        sampler2 = WarpSampler(user_train2, usernum2, itemnum2, args.model, batch_size=args.batch_size, maxlen=args.maxlen,
-            n_workers=os.cpu_count(), mask_prob=args.mask_prob, augment=args.augment)
+        sampler2 = WarpSampler(user_train2, usernum2, itemnum2, args.model, batch_size=args.batch_size, maxlen=args.maxlen, n_workers=int(os.cpu_count()/2), mask_prob=args.mask_prob, augment=args.augment)
 print(f"done training sampler for {args.dataset}!")
-
-def buffer_size_in_bytes(buffer):
-    return buffer.element_size() + buffer.nelement()
 
 # model setup
 if args.model == "sasrec":
     model = SASRec(usernum, itemnum, args).to(args.device)
 elif args.model == "newrec":
-    model = NewRec(usernum, itemnum, args).to(args.device)
+    model = NewRec(usernum, itemnum, args)
+    if not args.raw_feat_only:
+        model.to(args.device)
     if second:
         model2 = NewRec(usernum, itemnum, args, second=True)
 elif args.model == "newb4rec":
@@ -127,6 +130,11 @@ elif args.model == "bert4rec":
     model = BERT4Rec(itemnum, args).to(args.device)
 elif args.model == "bprmf":
     model = BPRMF(usernum, itemnum, args).to(args.device)
+
+if args.raw_feat_only:
+    print(f"done {args.model} model setup!")
+    train_test_mock(args, sampler, num_batch, model)
+    sys.exit()
 
 for name, param in model.named_parameters():
     if (
@@ -148,9 +156,9 @@ if second:
         except:
             pass
 
-print(f"done data sampling / {args.model} model setup!")
+print(f"done {args.model} model setup!")
 
-model.train()  
+model.train()
 if second:
     model2.train()
 epoch_start_idx = 1

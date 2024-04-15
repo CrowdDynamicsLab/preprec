@@ -285,6 +285,18 @@ class NewRec(torch.nn.Module):
 
         return pos_logits, neg_logits, full_feats[:, -1, :], pos_embed, neg_embed
 
+    def raw(
+            self,
+            log_seqs,
+            time1_seqs,
+            time2_seqs,
+    ):
+        # for training
+        # avoid information leakage with lag >= 1
+        time1_seqs, time2_seqs = np.maximum(0, time1_seqs - 1 - self.lag // 4), np.maximum(0, time2_seqs - self.lag)
+        pop_enc = self.popularity_enc(log_seqs, time1_seqs, time2_seqs).cpu()
+        return pop_enc.numpy()
+
     def user_score(self, log_seqs, time1_seqs, time2_seqs, time_embed, user):
         log_feats =  self.log2feats(user, log_seqs, time1_seqs, time2_seqs, time_embed)
         return log_feats[:, -1, :]
