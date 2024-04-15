@@ -5,6 +5,5 @@ run*
 res*
 runs/
 data/*
-!data/data.ipynb
 !data/data.py
 .ipynb_checkpoints*
