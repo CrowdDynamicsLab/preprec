@@ -91,6 +91,7 @@ def parse():
     parser.add_argument('--fs_emb_2', action='store_true', help='learnable embedding')
     parser.add_argument('--time_df_mod', default='', type=str, help='different dataset file')
     parser.add_argument('--raw_feat_only', action='store_true', help='raw feature only')
+    parser.add_argument('--aug_coef', default=0.1, type=float, help='weight for aug loss')
 
     args = parser.parse_args()
     return args

@@ -1,6 +1,8 @@
+import math
 import numpy as np
 import torch
 import pdb
+import copy
 
 
 # taken from https://github.com/pmixer/SASRec.pytorch/blob/master/model.py
@@ -40,6 +42,30 @@ class PointWiseFeedForward2(torch.nn.Module):
 
     def forward(self, x):
         return self.w_2(self.dropout(self.GELU(self.w_1(x))))
+
+
+# taken from https://github.com/RuihongQiu/DuoRec/blob/master/recbole/model/layers.py
+class PointWiseFeedForward3(torch.nn.Module):
+    def __init__(self, hidden_size, inner_size, hidden_dropout_prob, hidden_act, layer_norm_eps):
+        super(PointWiseFeedForward3, self).__init__()
+        self.dense_1 = torch.nn.Linear(hidden_size, inner_size)
+        self.dense_2 = torch.nn.Linear(inner_size, hidden_size)
+        self.LayerNorm = torch.nn.LayerNorm(hidden_size, eps=layer_norm_eps)
+        self.dropout = torch.nn.Dropout(hidden_dropout_prob)
+
+    def gelu(self, x):
+        return x * 0.5 * (1.0 + torch.erf(x / math.sqrt(2.0)))
+
+    def swish(self, x):
+        return x * torch.sigmoid(x)
+
+    def forward(self, input_tensor):
+        hidden_states = self.dense_1(input_tensor)
+        hidden_states = self.gelu(hidden_states)
+        hidden_states = self.dense_2(hidden_states)
+        hidden_states = self.dropout(hidden_states)
+        hidden_states = self.LayerNorm(hidden_states + input_tensor)
+        return hidden_states
 
 
 class InitFeedForward(torch.nn.Module):
@@ -362,10 +388,10 @@ class PopularityEncoding(torch.nn.Module):
             torch.flatten(torch.LongTensor(log_seqs)), self.input2
         )
         if (
-            torch.max(month_table_rows) >= self.month_pop_table.shape[0]
-            or torch.max(month_table_cols) >= self.month_pop_table.shape[1]
-            or torch.max(week_table_rows) >= self.week_pop_table.shape[0]
-            or torch.max(week_table_cols) >= self.week_pop_table.shape[1]
+                (month_table_rows.numel() > 0 and torch.max(month_table_rows) >= self.month_pop_table.shape[0]) or
+                (month_table_cols.numel() > 0 and torch.max(month_table_cols) >= self.month_pop_table.shape[1]) or
+                (week_table_rows.numel() > 0 and torch.max(week_table_rows) >= self.week_pop_table.shape[0]) or
+                (week_table_cols.numel() > 0 and torch.max(week_table_cols) >= self.week_pop_table.shape[1])
         ):
             # week_table_rows[week_table_rows >= self.week_pop_table.shape[0]]
             pdb.set_trace()

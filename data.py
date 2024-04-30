@@ -99,6 +99,8 @@ def data_partition(fname, maxlen, sparse_name = '', override_sparse=False, mod='
         else:
             u, i, t, t2 = line.rstrip().split(",")
         u = int(u) + 1
+        if u >= 40000:
+            continue
         i = int(i) + 1
         t = int(t)
         t2 = int(t2)
@@ -177,3 +179,47 @@ def data_partition2(fname, sparse_name, override_sparse, mod=''):
             user_valid[user] = [User[user][-2]]
         user_test[user] = [User[user][-1]]
     return [user_train, user_valid, user_test, usernum, itemnum]
+
+
+def data_partition3(fname, maxlen, sparse_name, override_sparse, mod=''):
+    """
+    dataset pre-processing without time but with sequence lengths
+    refer to data/data.py for dataset formatting
+    """
+
+    usernum = 0
+    itemnum = 0
+    User = defaultdict(list)
+    user_train = {}
+    user_valid = {}
+    user_test = {}
+    if sparse_name != '':
+        f = open(f"../data/{fname}_{sparse_name}intwtime{mod}.csv", "r")
+    else:
+        f = open(f"../data/{fname}_int2.csv", "r")
+    for line in f:
+        u, i = line.rstrip().split(",")[0:2]
+        u = int(u) + 1
+        i = int(i) + 1
+        usernum = max(u, usernum)
+        itemnum = max(i, itemnum)
+        User[u].append(i)
+
+    min_list_key = min(User, key=lambda k: len(User[k]))
+    min_length = len(User[min_list_key])
+    if min_length < 5 and not override_sparse:
+        sparse = True
+    else:
+        sparse = False
+
+    userlens = np.zeros(usernum+1, dtype=int)
+    for user in User:
+        if sparse:
+            user_train[user] = User[user][:-1]
+            user_valid[user] = []
+        else:
+            user_train[user] = User[user][:-2]
+            user_valid[user] = [User[user][-2]]
+        user_test[user] = [User[user][-1]]
+        userlens[user] = min(maxlen, len(user_train[user])-1)
+    return [user_train, user_valid, user_test, usernum, itemnum, userlens]

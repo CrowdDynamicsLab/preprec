@@ -216,7 +216,64 @@ def train_test(args, sampler, num_batch, model, dataset, epoch_start_idx, write,
                 adam_optimizer.step()
                 print("loss in epoch {} iteration {}: {}".format(epoch, step, loss.item()))
 
-        # validation and check early stopping 
+        elif args.model == "cl4srec":
+            bce_criterion = torch.nn.BCEWithLogitsLoss()
+            for step in range(num_batch):
+                # get batch data
+                seqs, lens, pos, neg = sampler.next_batch()
+                seqs, lens, pos, neg = (
+                    np.array(seqs),
+                    torch.LongTensor(np.array(lens)).to(args.device),
+                    np.array(pos),
+                    np.array(neg),
+                )
+
+                pos_logits, neg_logits, aug_loss = model(seqs, lens, pos, neg)
+                pos_labels, neg_labels = torch.ones(
+                    pos_logits.shape, device=args.device
+                ), torch.zeros(neg_logits.shape, device=args.device)
+                adam_optimizer.zero_grad()
+                indices = np.where(pos != 0)
+                loss = bce_criterion(pos_logits[indices], pos_labels[indices])
+                loss += bce_criterion(neg_logits[indices], neg_labels[indices])
+                loss += args.aug_coef * aug_loss
+                loss.backward()
+                adam_optimizer.step()
+                print("loss in epoch {} iteration {}: {}".format(epoch, step, loss.item()))
+
+        # elif args.model == "cl4srec":
+        #     for step in range(num_batch):
+        #         # get batch data
+        #         seqs, lens, pos, neg = sampler.next_batch()
+        #         seqs, lens, pos, neg = (
+        #             torch.LongTensor(np.array(seqs)).to(args.device),
+        #             torch.LongTensor(np.array(lens)).to(args.device),
+        #             torch.LongTensor(np.array(pos)).to(args.device),
+        #             torch.LongTensor(np.array(neg)).to(args.device),
+        #         )
+        #         loss = model.calculate_loss(seqs, lens, pos, neg)
+        #         adam_optimizer.zero_grad()
+        #         loss.backward()
+        #         adam_optimizer.step()
+        #         print("loss in epoch {} iteration {}: {}".format(epoch, step, loss.item()))
+        #
+        # elif args.model == "duorec":
+        #     for step in range(num_batch):
+        #         # get batch data
+        #         seqs, lens, pos, neg = sampler.next_batch()
+        #         seqs, lens, pos, neg = (
+        #             torch.LongTensor(np.array(seqs)).to(args.device),
+        #             torch.LongTensor(np.array(lens)).to(args.device),
+        #             torch.LongTensor(np.array(pos)).to(args.device),
+        #             torch.LongTensor(np.array(neg)).to(args.device),
+        #         )
+        #         loss = model.calculate_loss(seqs, lens, pos, neg)
+        #         adam_optimizer.zero_grad()
+        #         loss.backward()
+        #         adam_optimizer.step()
+        #         print("loss in epoch {} iteration {}: {}".format(epoch, step, loss.item()))
+        #
+        # validation and check early stopping
         if epoch % args.epoch_test == 0:
             t1 = time.time() - t0
             T += t1
