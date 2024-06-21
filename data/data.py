@@ -115,8 +115,11 @@ parser.add_argument('--reference', default='../../data/amazon/amazon_tool_intwti
 parser.add_argument('--ref_frac', default=10, type=int)
 parser.add_argument('--noise_std', default=0, type=int)
 parser.add_argument('--noise_p', default=1, type=float)
+parser.add_argument('--noise_prop_t', default=0, type=float)
 parser.add_argument('--use_perc',  action='store_true')
 parser.add_argument('--reverse',  action='store_true')
+parser.add_argument('--day_shift',  action='store_true')
+parser.add_argument('--hour_shift',  action='store_true')
 args = parser.parse_args()
 dataset = args.dataset
 
@@ -162,12 +165,34 @@ ao.user = ao.user.apply(lambda x: user_map[x])
 arr = np.array([ao.groupby('item').apply(lambda x: len(x)).values])
 np.savetxt(f'{dataset}{sparse}_rawpop.txt', arr)
 
+ao = ao[ao.time > 12]
+if args.noise_prop_t > 0:
+    time_std = (ao.time.max() - ao.time.min()) * args.noise_prop_t
+    shrink = 0.5 * (ao.time.max() - ao.time.min()) / (0.5 * (ao.time.max() - ao.time.min()) + 3 * time_std)
+    mean_time = ao.time.mean()
+    ao.time = (ao.time - mean_time) * shrink + mean_time
+    ao.time = (ao.time + np.random.normal(0, time_std, ao.shape[0])).astype(int)
+
 # month and week ids, these horizons can be changed based on dataset
-ao['time2'] = ao.time.apply(lambda x: datetime.fromtimestamp(x))
-ao['time3'] = np.ceil(ao.time2.dt.year*1000 + ao.time2.dt.dayofyear/args.t1_cutoff)
+try:
+    ao['time2'] = ao.time.apply(lambda x: datetime.fromtimestamp(x))
+except:
+    ao['time2'] = ao.time.apply(lambda x: datetime.fromtimestamp(x/1000))
+
+if args.day_shift:
+    ao['time3'] = np.ceil(ao.time2.dt.dayofyear * 100 + ao.time2.dt.hour / args.t1_cutoff)
+elif args.hour_shift:
+    ao['time3'] = np.ceil(ao.time2.dt.dayofyear * 100 + ao.time2.dt.hour * 100 + ao.time2.dt.minute / args.t1_cutoff)
+else:
+    ao['time3'] = np.ceil(ao.time2.dt.year * 1000 + ao.time2.dt.dayofyear / args.t1_cutoff)
 var_map = dict(zip(sorted(ao['time3'].unique()), range(len(ao['time3'].unique()))))
 ao['time4'] = ao['time3'].apply(lambda x: var_map[x])
-ao['time5'] = np.ceil(ao.time2.dt.year*1000 + ao.time2.dt.dayofyear/args.t2_cutoff)
+if args.day_shift:
+    ao['time5'] = np.ceil(ao.time2.dt.dayofyear * 100 + ao.time2.dt.hour / args.t2_cutoff)
+elif args.hour_shift:
+    ao['time5'] = np.ceil(ao.time2.dt.dayofyear * 100 + ao.time2.dt.hour * 100 + ao.time2.dt.minute / args.t2_cutoff)
+else:
+    ao['time5'] = np.ceil(ao.time2.dt.year * 1000 + ao.time2.dt.dayofyear / args.t2_cutoff)
 var_map = dict(zip(sorted(ao['time5'].unique()), range(len(ao['time5'].unique()))))
 ao['time6'] = ao['time5'].apply(lambda x: var_map[x])
 if args.stop_early:

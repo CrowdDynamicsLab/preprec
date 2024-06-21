@@ -6,7 +6,7 @@ import pdb
 from scipy.spatial import distance_matrix
 
 from parse import parse
-from model import SASRec, NewRec, NewB4Rec, BERT4Rec, BPRMF, CL4SRec #, DuoRec
+from model import SASRec, NewRec, NewB4Rec, BERT4Rec, BPRMF, CL4SRec
 from utils import *
 from data import *
 from train_test import train_test, train_test_mock
@@ -60,7 +60,7 @@ elif args.model in no_use_time_track_len:
     [user_train, user_valid, user_test, usernum, itemnum, userlens] = dataset
 elif args.model in use_time:
     if args.time_embed:
-        dataset = data_partition_wtime(args.dataset, args.maxlen, args.sparse_name if args.sparse else '', args.override_sparse, args.time_df_mod)
+        dataset = data_partition_wtime(args.dataset, args.maxlen, args.sparse_name if args.sparse else '', args.override_sparse, args.time_df_mod, args.just_std)
     else:
         dataset = data_partition(args.dataset, args.maxlen, args.sparse_name if args.sparse else '', args.override_sparse, args.time_df_mod)
     [user_train, user_valid, user_test, usernum, itemnum] = dataset
@@ -139,8 +139,6 @@ elif args.model == "bprmf":
     model = BPRMF(usernum, itemnum, args).to(args.device)
 elif args.model == "cl4srec":
     model = CL4SRec(itemnum, args).to(args.device)
-elif args.model == "duorec":
-    model = DuoRec(itemnum, args).to(args.device)
 
 if args.raw_feat_only:
     print(f"done {args.model} model setup!")

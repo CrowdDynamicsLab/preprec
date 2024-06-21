@@ -674,12 +674,11 @@ def newpredict_newrec(model, evaluate, train, valid, test, itemnum, args, mode, 
                     fullranks[k][inds] = (-total).argsort(axis=1).argsort(axis=1)[:, 0] #.to('cpu')
             elif not args.not_rank_scores:
                 random_keys = np.random.rand(predictions.shape[0], predictions.shape[1])
-                structured_predictions = np.empty(predictions.shape, dtype=[('predictions', predictions.dtype),
-                                                                            ('random_keys', random_keys.dtype)])
+                structured_predictions = np.empty(predictions.shape, dtype=[('predictions', predictions.dtype), ('random_keys', random_keys.dtype)])
                 structured_predictions['predictions'] = predictions
                 structured_predictions['random_keys'] = random_keys
                 sorted_indices = np.argsort(structured_predictions, order=('predictions', 'random_keys'))
-                fullranks[inds] = sorted_indices.argsort(axis=1).argsort(axis=1)[:, 0] #.to('cpu')
+                fullranks[inds] = sorted_indices.argsort(axis=1)[:, 0] #.to('cpu')
         if args.pause:
             pdb.set_trace()
         if args.save_scores:

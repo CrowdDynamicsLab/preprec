@@ -11,7 +11,7 @@ from scipy.stats import rankdata, percentileofscore
 
 
 
-def data_partition_wtime(fname, maxlen, sparse_name = '', override_sparse=False, mod=''):
+def data_partition_wtime(fname, maxlen, sparse_name = '', override_sparse=False, mod='', std=False):
     """
     dataset pre-processing that uses coarse time index, fine time index, and relative time embedding via exact timestamp
     refer to data/data.py for dataset formatting
@@ -38,6 +38,12 @@ def data_partition_wtime(fname, maxlen, sparse_name = '', override_sparse=False,
         User[1][u].append(t)
         User[2][u].append(t2)
         User[3][u].append(te)
+
+    if std:
+        lens = [len(value) for value in User[0].values()]
+        std_dev = np.std(lens)
+        print("Std dev", std_dev)
+        sys.exit(0)
 
     for user in User[0]:
         nfeedback = len(User[0][user])
@@ -91,8 +97,8 @@ def data_partition(fname, maxlen, sparse_name = '', override_sparse=False, mod='
     if sparse_name != '':
         f = open(f"../data/{fname}_{sparse_name}intwtime{mod}.csv", "r")
     else:
-        f = open(f"../data/{fname}_int2.csv", "r")
-    
+        f = open(f"../data/{fname}_int2{mod}.csv", "r")
+
     for line in f:
         if sparse_name != '':
             u, i, t, t2, _ = line.rstrip().split(",")
@@ -153,7 +159,7 @@ def data_partition2(fname, sparse_name, override_sparse, mod=''):
     if sparse_name != '':
         f = open(f"../data/{fname}_{sparse_name}intwtime{mod}.csv", "r")
     else:
-        f = open(f"../data/{fname}_int2.csv", "r")
+        f = open(f"../data/{fname}_int2{mod}.csv", "r")
     for line in f:
         u, i = line.rstrip().split(",")[0:2]
         u = int(u) + 1
@@ -196,7 +202,7 @@ def data_partition3(fname, maxlen, sparse_name, override_sparse, mod=''):
     if sparse_name != '':
         f = open(f"../data/{fname}_{sparse_name}intwtime{mod}.csv", "r")
     else:
-        f = open(f"../data/{fname}_int2.csv", "r")
+        f = open(f"../data/{fname}_int2{mod}.csv", "r")
     for line in f:
         u, i = line.rstrip().split(",")[0:2]
         u = int(u) + 1

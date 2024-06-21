@@ -92,6 +92,8 @@ def parse():
     parser.add_argument('--time_df_mod', default='', type=str, help='different dataset file')
     parser.add_argument('--raw_feat_only', action='store_true', help='raw feature only')
     parser.add_argument('--aug_coef', default=0.1, type=float, help='weight for aug loss')
+    parser.add_argument('--state_override', action='store_true', help='override loading state after training')
+    parser.add_argument('--just_std', action='store_true', help='just std')
 
     args = parser.parse_args()
     return args

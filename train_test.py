@@ -6,7 +6,6 @@ import pdb
 from scipy.spatial import distance_matrix
 
 from parse import parse
-from model import SASRec, NewRec, NewB4Rec, BERT4Rec, BPRMF
 from utils import *
 
 
@@ -31,7 +30,6 @@ def train_test(args, sampler, num_batch, model, dataset, epoch_start_idx, write,
     best_state = model.state_dict()
     stop_early = 0
     if args.first_eval:
-        pdb.set_trace()
         model.eval()
         mode = "valid" if not args.sparse or args.override_sparse else "test"
         t_valid = evaluate(model, dataset, args, mode, usernegs)
@@ -241,38 +239,6 @@ def train_test(args, sampler, num_batch, model, dataset, epoch_start_idx, write,
                 adam_optimizer.step()
                 print("loss in epoch {} iteration {}: {}".format(epoch, step, loss.item()))
 
-        # elif args.model == "cl4srec":
-        #     for step in range(num_batch):
-        #         # get batch data
-        #         seqs, lens, pos, neg = sampler.next_batch()
-        #         seqs, lens, pos, neg = (
-        #             torch.LongTensor(np.array(seqs)).to(args.device),
-        #             torch.LongTensor(np.array(lens)).to(args.device),
-        #             torch.LongTensor(np.array(pos)).to(args.device),
-        #             torch.LongTensor(np.array(neg)).to(args.device),
-        #         )
-        #         loss = model.calculate_loss(seqs, lens, pos, neg)
-        #         adam_optimizer.zero_grad()
-        #         loss.backward()
-        #         adam_optimizer.step()
-        #         print("loss in epoch {} iteration {}: {}".format(epoch, step, loss.item()))
-        #
-        # elif args.model == "duorec":
-        #     for step in range(num_batch):
-        #         # get batch data
-        #         seqs, lens, pos, neg = sampler.next_batch()
-        #         seqs, lens, pos, neg = (
-        #             torch.LongTensor(np.array(seqs)).to(args.device),
-        #             torch.LongTensor(np.array(lens)).to(args.device),
-        #             torch.LongTensor(np.array(pos)).to(args.device),
-        #             torch.LongTensor(np.array(neg)).to(args.device),
-        #         )
-        #         loss = model.calculate_loss(seqs, lens, pos, neg)
-        #         adam_optimizer.zero_grad()
-        #         loss.backward()
-        #         adam_optimizer.step()
-        #         print("loss in epoch {} iteration {}: {}".format(epoch, step, loss.item()))
-        #
         # validation and check early stopping
         if epoch % args.epoch_test == 0:
             t1 = time.time() - t0
@@ -300,7 +266,7 @@ def train_test(args, sampler, num_batch, model, dataset, epoch_start_idx, write,
                 ndcg = (ndcg + ndcg2)/2
 
             fname = f"epoch={epoch}.pth"
-            if epoch % (3*args.epoch_test) == 0:
+            if epoch % (args.epoch_test) == 0:
                 torch.save(model.state_dict(), os.path.join(write, fname))
             if ndcg > best_ndcg:
                 best_ndcg = ndcg
@@ -324,7 +290,7 @@ def train_test(args, sampler, num_batch, model, dataset, epoch_start_idx, write,
         # model.handle_inference()
         # model.eval_popularity_enc = model.eval_popularity_enc.to("cuda")
         # if we've trained, used best training parameters
-        if not args.inference_only:
+        if not args.inference_only and not args.state_override:
             model_dict = model.state_dict()
             model_dict.update(best_state)
             model.load_state_dict(model_dict)
