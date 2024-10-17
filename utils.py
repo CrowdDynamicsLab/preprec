@@ -1,16 +1,10 @@
 import sys
-import copy
 import torch
-import random
 import numpy as np
 from collections import defaultdict, Counter
 from multiprocessing import Process, Queue
-import pdb
-import math
-from scipy.stats import rankdata, percentileofscore
-import pickle
+from scipy.stats import rankdata
 from operator import itemgetter
-import psutil
 
 
 # sampler for batch generation
@@ -65,24 +59,6 @@ def sample_function_newrec(
         for i in range(batch_size):
             one_batch.append(sample())
         result_queue.put(zip(*one_batch))
-
-
-def sample_function_newrec_rfo(
-    user_comb, usernum, itemnum, batch_size, maxlen, result_queue, userpop,
-):
-    user_train, user_valid, user_test = user_comb
-    def sample(user):
-        if np.sum(np.array(user_train[0][user]) != 0) <= 1:
-            raise ValueError("Must have at least 2 items.")
-        seq = np.array(user_train[0][user] + [user_valid[0][user]] + [user_test[0][user]], dtype=np.int32)
-        time1 = np.array(user_train[1][user] + [user_valid[1][user]] + [user_test[1][user]], dtype=np.int32)
-        time2 = np.array(user_train[2][user] + [user_valid[2][user]] + [user_test[2][user]], dtype=np.int32)
-        return (user, seq, time1, time2)
-
-    one_batch = []
-    for i in range(batch_size):
-        one_batch.append(sample(userpop[i]))
-    result_queue.put(zip(*one_batch))
 
 
 def sample_function_sasrec(
@@ -286,48 +262,10 @@ class WarpSampler(object):
         n_workers=1,
         mask_prob=0,
         augment=False,
-        raw_feature_only=False,
         misc=None,
     ):
         self.result_queue = Queue(maxsize=n_workers * 10)
         self.processors = []
-
-        if raw_feature_only:
-            def extract_subset(user_comb, keys):
-                user_train, user_valid, user_test = user_comb
-                train_subset = tuple({key: d[key] for key in keys if key in d} for d in user_train)
-                valid_subset = tuple({key: d[key] for key in keys if key in d} for d in user_valid)
-                test_subset = tuple({key: d[key] for key in keys if key in d} for d in user_test)
-                return (train_subset, valid_subset, test_subset)
-
-            userint = misc
-            userpop = np.argsort(userint) + 1
-            print("USER INT LENGTH", len(userpop))
-            nworkers = int((len(userpop)) // batch_size)
-            self.result_queue = Queue(maxsize=nworkers)
-            chunks = [userpop[i * batch_size:(i + 1) * batch_size] for i in range(nworkers)]
-            func = sample_function_newrec_rfo
-            for i in range(nworkers):
-                print(f"starting worker {i}")
-                user_subset = extract_subset(User, chunks[i])
-                self.processors.append(
-                    Process(
-                        target=func,
-                        args=(
-                            user_subset,
-                            usernum,
-                            itemnum,
-                            batch_size,
-                            maxlen,
-                            self.result_queue,
-                            chunks[i],
-                        ),
-                    )
-                )
-                self.processors[-1].daemon = True
-                self.processors[-1].start()
-                print(f"finished worker {i}")
-            return
 
         if augment:
             usernum = len(User)
@@ -373,54 +311,9 @@ class WarpSampler(object):
             p.join()
 
 
-def setup_negatives(dataset, dataname, mod, args):
-    train, valid, test, usernum, itemnum = dataset
-    print(usernum, itemnum)
-    users = range(1, usernum + 1)
-    usersneg = {}
-    if args.userneg == "userneg":
-        for u in users:
-            rated = set(train[0][u])
-            rated.add(valid[0][u])
-            rated.add(test[0][u])
-            negs = []
-            for _ in range(100):
-                t = np.random.randint(1, itemnum + 1)
-                while t in rated:
-                    t = np.random.randint(1, itemnum + 1)
-                rated.add(t)
-                negs.append(t)
-            usersneg[u] = negs
-    else:
-        lastpop = np.loadtxt(f"../data/{args.dataset}_{mod}{args.rawpop}.txt")
-        if lastpop.ndim == 2:
-            lastpop = lastpop[-1]
-        lastprob = lastpop/np.sum(lastpop)
-        for u in users:
-            rated = set(train[0][u])
-            rated.add(valid[0][u])
-            rated.add(test[0][u])
-            negs = []
-            for _ in range(100):
-                t = np.random.choice(np.arange(1, itemnum+1), p=lastprob)
-                while t in rated:
-                    t = np.random.choice(np.arange(1, itemnum+1), p=lastprob)
-                rated.add(t)
-                negs.append(t)
-            usersneg[u] = negs
-    with open(f"../data/{dataname}_{mod}{args.userneg}.pickle", 'wb') as handle:
-        pickle.dump(usersneg, handle, protocol=pickle.HIGHEST_PROTOCOL)
-    print("finished negative setup for " + dataname)
-
-
 def evaluate(model, dataset, args, mode, usernegs, second=False):
     if args.model == "newrec":
-        if args.save_emb:
-            predict = newrec_user
-        else:
-            predict = newpredict_newrec
-    elif args.model == "newb4rec":
-        predict = predict_newb4rec
+        predict = newpredict_newrec
     elif args.model == "mostpop":
         predict = predict_mostpop
     elif args.model == "bprmf":
@@ -434,7 +327,7 @@ def evaluate(model, dataset, args, mode, usernegs, second=False):
 
     load = args.dataset2 if second else args.dataset
     if args.eval_quality:
-        userpop = np.loadtxt(f"../data/{load}_{args.userpop}.txt")
+        userpop = np.loadtxt(f"./data{load}_{args.userpop}.txt")
         if load == "amazon/amazon_office":
             change_inds = np.random.choice(np.where(userpop==5)[0], userpop[userpop==5].size//2, replace=False)
             userpop[change_inds] = 5.5
@@ -457,16 +350,12 @@ def evaluate(model, dataset, args, mode, usernegs, second=False):
     evaluate = test if mode == "test" else valid
 
     if args.model == "mostpop":
-        misc = np.loadtxt(f"../data/{load}_{args.rawpop}.txt")
+        misc = np.loadtxt(f"./data{load}_{args.rawpop}.txt")
     else:
         misc = None
 
     if args.model in ["newrec", "bert4rec", "sasrec", "bprmf", "cl4srec"]:
         ranks, predusers = predict(model, evaluate, train, valid, test, itemnum, args, mode, usernegs, users)
-        if args.pause:
-            np.savetxt(f"../data/{args.dataset}_{args.model}_ranks_{args.time_df_mod}.txt", ranks)
-            sys.exit()
-
         if args.eval_quality:
             locs = Counter((userpop[predusers] // args.quality_size).astype(int))
 
@@ -541,10 +430,7 @@ def evaluate(model, dataset, args, mode, usernegs, second=False):
                 )
             valid_user += 1
 
-            if args.eval_quality:
-                loc = int(userpop[u] // args.quality_size)
-                counts[loc] += 1
-
+            loc = int(userpop[u] // args.quality_size)
             if args.eval_method != 3:
                 for i, k in enumerate(args.topk):
                     if rank < k:
@@ -559,13 +445,7 @@ def evaluate(model, dataset, args, mode, usernegs, second=False):
                     if rank < k:
                         metrics[i][0] += 1 / np.log2(rank + 2)
                         metrics[i][1] += rank
-            # if valid_user % 100 == 0:
-                # print(".", end="")
-                # sys.stdout.flush()
             ranks.append(rank)
-        if args.pause:
-            np.savetxt(f"../data/{args.dataset}_{args.model}_ranks_{args.time_df_mod}.txt", np.array(ranks))
-            sys.exit()
 
     if args.eval_quality:
         metrics = [[[round(metrics[i][j][k] / locs[k], 3) for k in range(numgroups) if locs[k] != 0] for j in range(2)] for i in range(len(args.topk))]
@@ -576,9 +456,6 @@ def evaluate(model, dataset, args, mode, usernegs, second=False):
     print(metrics)
     return metrics
 
-# predict(
-#             model, evaluate[u], train[u], valid[u], test[u], itemnum, args, mode, usernegs[u], misc
-#         )
 def newpredict_newrec(model, evaluate, train, valid, test, itemnum, args, mode, usernegs, users):
     seqs = np.array(list(itemgetter(*users)(train[0])))
     t1s = np.array(list(itemgetter(*users)(train[1])))
@@ -679,8 +556,6 @@ def newpredict_newrec(model, evaluate, train, valid, test, itemnum, args, mode, 
                 structured_predictions['random_keys'] = random_keys
                 sorted_indices = np.argsort(structured_predictions, order=('predictions', 'random_keys'))
                 fullranks[inds] = sorted_indices.argsort(axis=1)[:, 0] #.to('cpu')
-        if args.pause:
-            pdb.set_trace()
         if args.save_scores:
             add = ''
             if args.eval_method == 3:
@@ -980,112 +855,6 @@ def newpredict_cl4srec(model, evaluate, train, valid, test, itemnum, args, mode,
     return fullranks, np.array(list(usernegs.keys()))[cond]
 
 
-# def newpredict_recbole(model, evaluate, train, valid, test, itemnum, args, mode, usernegs, users, userlens):
-#     listseqs = list(itemgetter(*users)(train))
-#     length = max(map(len, listseqs))
-#     seqs = np.array([[0]*(length-len(xi))+xi for xi in listseqs])
-#     seqs_valid = np.array(list(itemgetter(*users)(valid)))
-#     seqs_test = np.array(list(itemgetter(*users)(test)))
-#
-#     if mode == "test":
-#         if not args.no_valid_in_test:
-#             seqs = np.concatenate((seqs, seqs_valid), axis=1)
-#         item_idxs = seqs_test
-#         use_userlens = np.minimum(userlens+2, args.maxlen)
-#     else:
-#         item_idxs = seqs_valid
-#         use_userlens = np.minimum(userlens+1, args.maxlen)
-#     seqs = seqs[:, -args.maxlen:]
-#
-#     negs = np.array(list(itemgetter(*usernegs.keys())(usernegs)))
-#     cond = np.isin(users, list(usernegs.keys())) # (item_idxs != 0) & ()
-#     seqs, item_idxs, users = seqs[cond], item_idxs[cond], np.array(users)[cond]
-#     cond = np.squeeze(item_idxs, 1) != 0
-#     seqs, item_idxs, users = seqs[cond], item_idxs[cond], np.array(users)[cond]
-#     item_idxs = np.concatenate((item_idxs, negs), axis=1)
-#
-#     fullranks = np.zeros(seqs.shape[0])
-#     for i in range(seqs.shape[0]//100+1):
-#         inds = np.arange(100*i, min(100*(i+1), seqs.shape[0]))
-#         if inds.size == 0:
-#             continue
-#         predictions = -model.predict(
-#             *[torch.LongTensor(seqs[inds]).to(args.device), torch.LongTensor(use_userlens[inds]).to(args.device), torch.LongTensor(item_idxs[inds]).to(args.device)]
-#         )
-#         fullranks[inds] = predictions.argsort(axis=1).argsort(axis=1)[:, 0].to('cpu')
-#     return fullranks, np.array(list(usernegs.keys()))[cond]
-
-
-def predict_newrec(model, evaluate, train, valid, test, itemnum, args, mode, negs, user):
-    seq = [x[0] for x in train]
-    t1 = [x[1] for x in train]
-    t2 = [x[2] for x in train]
-    if mode == "test":
-        seq.append(valid[0][0])
-        t1.append(valid[0][1])
-        t2.append(valid[0][2])
-
-    seq = seq[-args.maxlen :]
-    padding_len = args.maxlen - len(seq)
-    seq = [0] * padding_len + seq
-    t1 = t1[-args.maxlen :]
-    t1 = [0] * padding_len + t1
-    t2 = t2[-args.maxlen :]
-    t2 = [0] * padding_len + t2
-
-    if args.eval_method == 1:
-        item_idx = [evaluate[0][0]]
-        item_idx.extend(negs)
-
-    elif args.eval_method == 2:
-        pass
-
-    elif args.eval_method == 3:
-        item_idx = list(set(range(1, itemnum + 1)).difference(rated))
-        item_idx.insert(0, evaluate[0][0])
-
-    predictions = -model.predict(
-        *[np.array(l) for l in [[seq], [t1], [t2], item_idx, user]]
-    )
-    predictions = torch.flatten(predictions)
-    rank = predictions.argsort().argsort()[0].item()
-    return rank
-
-
-def predict_newb4rec(model, evaluate, train, valid, test, itemnum, args, mode, negs, _):
-    seq = [x[0] for x in train]
-    t1 = [x[1] for x in train]
-    t2 = [x[2] for x in train]
-    if mode == "test":
-        seq.append(valid[0][0])
-        t1.append(valid[0][1])
-        t2.append(valid[0][2])
-
-    seq = seq[-args.maxlen :]
-    t1 = t1[-args.maxlen :]
-    t2 = t2[-args.maxlen :]
-    padding_len = args.maxlen - len(seq)
-    seq = [0] * padding_len + seq
-    t1 = [0] * padding_len + t1
-    t2 = [0] * padding_len + t2
-
-    if args.eval_method == 1:
-        item_idx = [evaluate[0][0]]
-        item_idx.extend(negs)
-
-    elif args.eval_method == 2:
-        pass
-
-    elif args.eval_method == 3:
-        item_idx = list(set(range(1, itemnum + 1)).difference(rated))
-        item_idx.insert(0, evaluate[0][0])
-
-    predictions = -model.predict(*[np.array(l) for l in [[seq], [t1], [t2], item_idx]])
-    predictions = torch.flatten(predictions)  # - for 1st argsort DESC
-    rank = predictions.argsort().argsort()[0].item()
-    return rank
-
-
 def predict_mostpop(model, evaluate, train, valid, test, itemnum, args, mode, negs, rawpop):
     if args.eval_method == 1:
         item_idx = [evaluate[0]]
@@ -1095,6 +864,9 @@ def predict_mostpop(model, evaluate, train, valid, test, itemnum, args, mode, ne
         pass
 
     elif args.eval_method == 3:
+        rated = set(train[0])
+        if mode == "test":
+            rated.add(valid[0])
         item_idx = list(set(range(1, itemnum + 1)).difference(rated))
         item_idx.insert(0, evaluate[0])
 
@@ -1104,83 +876,8 @@ def predict_mostpop(model, evaluate, train, valid, test, itemnum, args, mode, ne
         else:
             t1 = valid[1] - 1
         predictions = -rawpop[-1, np.array(item_idx)-1]
-        # predictions = -rawpop[t1, np.array(item_idx)-1]
     else:
         predictions = -rawpop[np.array(item_idx)-1]
     b = np.random.random(predictions.size)
     rank = np.lexsort((b, predictions)).argsort()[0].item()
     return rank
-
-
-
-
-def predict_bprmf(model, evaluate, train, valid, test, itemnum, args, mode, negs, u):
-    if args.eval_method == 1:
-        item_idx = [evaluate[0]]
-        item_idx.extend(negs)
-
-    elif args.eval_method == 2:
-        pass
-
-    elif args.eval_method == 3:
-        item_idx = list(set(range(1, itemnum + 1)).difference(rated))
-        item_idx.insert(0, evaluate[0])
-
-    predictions = -model.predict(*[np.array(l) for l in [[u], item_idx]])
-    predictions = torch.flatten(predictions)  # - for 1st argsort DESC
-
-    rank = predictions.argsort().argsort()[0].item()
-    return rank
-
-
-def predict_sasrec(model, evaluate, train, valid, test, itemnum, args, mode, negs, _):
-    seq = train
-    if mode == "test":
-        seq.append(valid[0])
-    seq = seq[-args.maxlen :]
-    padding_len = args.maxlen - len(seq)
-    seq = [0] * padding_len + seq
-
-    if args.eval_method == 1:
-        item_idx = [evaluate[0]]
-        item_idx.extend(negs)
-    elif args.eval_method == 2:
-        pass
-
-    elif args.eval_method == 3:
-        item_idx = list(set(range(1, itemnum + 1)).difference(rated))
-        item_idx.insert(0, evaluate[0])
-
-    predictions = -model.predict(*[np.array(l) for l in [[seq], item_idx]])
-    predictions = torch.flatten(predictions)  # - for 1st argsort DESC
-
-    rank = predictions.argsort().argsort()[0].item()
-    return rank
-
-
-def predict_bert4rec(model, evaluate, train, valid, test, itemnum, args, mode, negs, _):
-    if mode == "test":
-        seq = train + valid + [0]
-    else:
-        seq = train + [0]
-    seq = seq[-args.maxlen :]
-    padding_len = args.maxlen - len(seq)
-    seq = [0] * padding_len + seq
-
-    if args.eval_method == 1:
-        item_idx = [evaluate[0]]
-        item_idx.extend(negs)
-
-    elif args.eval_method == 2:
-        pass
-
-    elif args.eval_method == 3:
-        item_idx = list(set(range(1, itemnum + 1)).difference(rated))
-        item_idx.insert(0, evaluate[0])
-
-    predictions = -model.predict(*[torch.LongTensor([seq]), torch.LongTensor(item_idx)])
-    predictions = torch.flatten(predictions)  # - for 1st argsort DESC
-
-    rank = predictions.argsort().argsort()[0].item()
-    return rank
-

@@ -1,9 +1,13 @@
 .DS_Store
-__pycache__/
+*__pycache__*
 *_default/
 run*
 res*
 runs/
 data/*
 !data/data.py
+!data/data_2.py
+!data/data_full.py
+!data/preprocess.sh
 .ipynb_checkpoints*
+venv/

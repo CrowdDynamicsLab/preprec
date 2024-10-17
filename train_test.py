@@ -1,11 +1,8 @@
 import os
 import time
 import torch
-import argparse
-import pdb
 from scipy.spatial import distance_matrix
 
-from parse import parse
 from utils import *
 
 
@@ -24,7 +21,7 @@ def train_test(args, sampler, num_batch, model, dataset, epoch_start_idx, write,
 
     # add regularization
     if args.triplet_loss or args.cos_loss:
-        user_feat = np.loadtxt(f"../data/{args.dataset}_{args.reg_file}.txt")
+        user_feat = np.loadtxt(f"./data{args.dataset}_{args.reg_file}.txt")
 
     best_ndcg = 0
     best_state = model.state_dict()
@@ -261,7 +258,7 @@ def train_test(args, sampler, num_batch, model, dataset, epoch_start_idx, write,
                 t_valid2 = evaluate(model2, dataset2, args, mode, usernegs2, True)
                 model2.train()
                 ndcg2, hr2 = t_valid2[0][0], t_valid2[0][1]
-                f.write(f"epoch:{epoch}, time: {T}, dataset 2: (NDCG@{args.topk[0]}: {ndcg2}, HR@{args.topk[0]}: {hr2})" + "\n")
+                f.write(f"Validation at epoch:{epoch}, time: {T}, dataset 2: (NDCG@{args.topk[0]}: {ndcg2}, HR@{args.topk[0]}: {hr2})" + "\n")
                 f.flush()
                 ndcg = (ndcg + ndcg2)/2
 
@@ -294,6 +291,8 @@ def train_test(args, sampler, num_batch, model, dataset, epoch_start_idx, write,
             model_dict = model.state_dict()
             model_dict.update(best_state)
             model.load_state_dict(model_dict)
+        f.write("\nTest results:\n")
+        f.flush()
         t_test = evaluate(model, dataset, args, "test", usernegs)
         for i, k in enumerate(args.topk):
             f.write(f"NDCG@{k}: {t_test[i][0]}, HR@{k}: {t_test[i][1]} \n")
@@ -312,23 +311,3 @@ def train_test(args, sampler, num_batch, model, dataset, epoch_start_idx, write,
     if sampler:
         sampler.close()
     print("Done")
-
-
-def train_test_mock(args, sampler, num_batch, model):
-    try:
-        if not os.path.exists(f"../data/{args.dataset}/"):
-            os.makedirs(f"../data/{args.dataset}/")
-        label_path = f"../data/{args.dataset}_raw_feat_label.npy"
-        if os.path.exists(label_path):
-            os.remove(label_path)
-        np_batch = np.zeros((num_batch, args.batch_size), dtype=np.int32)
-        for step in range(int(num_batch)):
-            u, seq, time1, time2 = sampler.next_batch()
-            u, seq, time1, time2 = (np.array(u), np.array(seq), np.array(time1), np.array(time2))
-            pop_enc = model.raw(seq, time1, time2)
-            np.save(f"../data/{args.dataset}/raw_feat_{step}.npy", pop_enc)
-            np_batch[step] = np.count_nonzero(seq, axis=1)
-        np.save(label_path, np_batch)
-    except:
-        import pdb
-        pdb.set_trace()

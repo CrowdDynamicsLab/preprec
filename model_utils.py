@@ -82,28 +82,6 @@ class InitFeedForward(torch.nn.Module):
         return outputs
 
 
-class InitFeedForward2(torch.nn.Module):
-    def __init__(self, input_units, hidden_units):
-        super(InitFeedForward2, self).__init__()
-
-        self.fc1 = torch.nn.Linear(input_units, hidden_units)
-        self.relu = torch.nn.ReLU()
-
-    def forward(self, inputs):
-        outputs = self.relu(self.fc1(inputs))
-        return outputs
-
-class InitFeedForward3(torch.nn.Module):
-    def __init__(self, input_units, hidden_units):
-        super(InitFeedForward3, self).__init__()
-        self.fc = torch.nn.Linear(input_units, hidden_units)
-
-    def forward(self, inputs):
-        outputs = self.fc(inputs)
-        return outputs
-
-
-
 class Gate(torch.nn.Module):
     def __init__(self, hidden=50, dropout_rate=0):
         super(Gate, self).__init__()
@@ -327,11 +305,11 @@ class PopularityEncoding(torch.nn.Module):
         self.base_dim2 = args.base_dim2
         # table of fixed feature vectors for items by time, shape: (num_times*base_dim, num_items)
         if not second:
-            month_pop = np.loadtxt(f"../data/{args.dataset}_{args.monthpop}.txt")
-            week_pop = np.loadtxt(f"../data/{args.dataset}_{args.weekpop}.txt")
+            month_pop = np.loadtxt(f"./data/{args.dataset}_{args.monthpop}.txt")
+            week_pop = np.loadtxt(f"./data/{args.dataset}_{args.weekpop}.txt")
         else:
-            month_pop = np.loadtxt(f"../data/{args.dataset2}_{args.monthpop}.txt")
-            week_pop = np.loadtxt(f"../data/{args.dataset2}_{args.weekpop}.txt")
+            month_pop = np.loadtxt(f"./data/{args.dataset2}_{args.monthpop}.txt")
+            week_pop = np.loadtxt(f"./data/{args.dataset2}_{args.weekpop}.txt")
         # add zeros for the index-0 empty item placeholder and initial time period
         self.register_buffer(
             "month_pop_table",
@@ -418,9 +396,9 @@ class EvalPopularityEncoding(torch.nn.Module):
         self.base_dim2 = args.base_dim2
         self.pause = args.pause
         # table of fixed feature vectors for items by time, shape: (num_times*base_dim, num_items)
-        month_pop = np.loadtxt(f"../data/{args.dataset}_{args.monthpop}.txt")
-        week_pop = np.loadtxt(f"../data/{args.dataset}_{args.weekpop}.txt")
-        week_eval_pop = np.loadtxt(f"../data/{args.dataset}_{args.week_eval_pop}.txt")
+        month_pop = np.loadtxt(f"./data/{args.dataset}_{args.monthpop}.txt")
+        week_pop = np.loadtxt(f"./data/{args.dataset}_{args.weekpop}.txt")
+        week_eval_pop = np.loadtxt(f"./data/{args.dataset}_{args.week_eval_pop}.txt")
         self.register_buffer("week_eval_pop", torch.FloatTensor(week_eval_pop))
         # add zeros for the index-0 empty item placeholder and initial time period
         self.register_buffer(

@@ -1,17 +1,12 @@
 import os
-import time
 import torch
-import argparse
-import pdb
-from scipy.spatial import distance_matrix
-
+import random
 from parse import parse
 from model import SASRec, NewRec, NewB4Rec, BERT4Rec, BPRMF, CL4SRec
 from utils import *
 from data import *
-from train_test import train_test, train_test_mock
+from train_test import train_test
 import pickle
-import psutil
 
 args = parse()
 
@@ -60,7 +55,7 @@ elif args.model in no_use_time_track_len:
     [user_train, user_valid, user_test, usernum, itemnum, userlens] = dataset
 elif args.model in use_time:
     if args.time_embed:
-        dataset = data_partition_wtime(args.dataset, args.maxlen, args.sparse_name if args.sparse else '', args.override_sparse, args.time_df_mod, args.just_std)
+        dataset = data_partition_wtime(args.dataset, args.maxlen, args.sparse_name if args.sparse else '', args.override_sparse, args.time_df_mod)
     else:
         dataset = data_partition(args.dataset, args.maxlen, args.sparse_name if args.sparse else '', args.override_sparse, args.time_df_mod)
     [user_train, user_valid, user_test, usernum, itemnum] = dataset
@@ -72,20 +67,13 @@ elif args.model in use_time:
         [user_train2, user_valid2, user_test2, usernum2, itemnum2] = dataset2
         second = True
 
-# randomly fix negative test samples
+# evaluation negatives
 mod = args.sparse_name if args.sparse else ''
-if args.save_neg:
-    setup_negatives(dataset, args.dataset, mod, args)
-    sys.exit()
 userneg_mod = mod
-# if 'fs' in mod and 'temp' not in mod:
-    # userneg_mod = 'fs_20_'
-    # if '2_' in mod:
-        # userneg_mod += '2_'
-with open(f"../data/{args.dataset}_{userneg_mod}{args.userneg}.pickle", 'rb') as handle:
+with open(f"./data/{args.dataset}_{userneg_mod}{args.userneg}.pickle", 'rb') as handle:
     usernegs = pickle.load(handle)
 if second:
-    with open(f"../data/{args.dataset2}_{userneg_mod}{args.userneg}.pickle", 'rb') as handle:
+    with open(f"./data/{args.dataset2}_{userneg_mod}{args.userneg}.pickle", 'rb') as handle:
         usernegs2 = pickle.load(handle)
 
 print(f"done loading data for {args.dataset}!")
@@ -107,17 +95,13 @@ if args.model == "mostpop":
 sampler = None
 sampler2 = None
 if not args.inference_only:
-    # positive (and negative if applicable) sampling for training
-    if args.raw_feat_only:
-        misc = np.loadtxt(f"../data/{args.dataset}_{args.userpop}.txt")[1:40000].astype(np.int32)
-        user_comb = (user_train, user_valid, user_test)
-    elif args.model in ["cl4srec", "duorec"]:
+    if args.model in ["cl4srec", "duorec"]:
         misc = userlens
         user_comb = user_train
     else:
         misc = None
         user_comb = user_train
-    sampler = WarpSampler(user_comb, usernum, itemnum, args.model, batch_size=args.batch_size, maxlen=args.maxlen,n_workers=4, mask_prob=args.mask_prob, augment=args.augment, raw_feature_only=args.raw_feat_only, misc=misc)
+    sampler = WarpSampler(user_comb, usernum, itemnum, args.model, batch_size=args.batch_size, maxlen=args.maxlen,n_workers=4, mask_prob=args.mask_prob, augment=args.augment, misc=misc)
     if second:
         sampler2 = WarpSampler(user_train2, usernum2, itemnum2, args.model, batch_size=args.batch_size, maxlen=args.maxlen, n_workers=int(os.cpu_count()/2), mask_prob=args.mask_prob, augment=args.augment)
 print(f"done training sampler for {args.dataset}!")
@@ -126,9 +110,7 @@ print(f"done training sampler for {args.dataset}!")
 if args.model == "sasrec":
     model = SASRec(usernum, itemnum, args).to(args.device)
 elif args.model == "newrec":
-    model = NewRec(usernum, itemnum, args)
-    if not args.raw_feat_only:
-        model.to(args.device)
+    model = NewRec(usernum, itemnum, args).to(args.device)
     if second:
         model2 = NewRec(usernum, itemnum, args, second=True)
 elif args.model == "newb4rec":
@@ -139,11 +121,6 @@ elif args.model == "bprmf":
     model = BPRMF(usernum, itemnum, args).to(args.device)
 elif args.model == "cl4srec":
     model = CL4SRec(itemnum, args).to(args.device)
-
-if args.raw_feat_only:
-    print(f"done {args.model} model setup!")
-    train_test_mock(args, sampler, num_batch, model)
-    sys.exit()
 
 for name, param in model.named_parameters():
     if (
@@ -202,12 +179,6 @@ if args.model == "newrec":
     # if torch.cuda.device_count() > 1:
     #     model = torch.nn.DataParallel(model)
     model.to(args.device)
-
-
-
-if args.pause_size:
-    print(sum(p.numel() for p in model.parameters()))
-    sys.exit()
 
 if not second:
     num_batch2 = None
